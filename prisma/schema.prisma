@@ -1,0 +1,447 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "cockroachdb"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------
+// 1. PRODUCTOS, CATEGORÍAS Y UBICACIONES
+// ----------------------------------------------------
+
+model Category {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String    @unique
+  products  Product[]
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("categories")
+}
+
+model Product {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code              String    @unique
+  name              String
+  categoryId        String?   @map("category_id") @db.Uuid
+  category          Category? @relation(fields: [categoryId], references: [id])
+  unit              String    // "kg", "lb", "unidad", etc.
+  allowsDecimals    Boolean   @default(true) @map("allows_decimals")
+  price             Decimal   @db.Decimal(14, 4)
+  cost              Decimal   @default(0) @db.Decimal(14, 4)
+  minStock          Decimal   @default(0) @map("min_stock") @db.Decimal(14, 3)
+  targetStock       Decimal   @default(0) @map("target_stock") @db.Decimal(14, 3)
+  mainSupplierId    String?   @map("main_supplier_id") @db.Uuid
+  mainSupplier      Supplier? @relation(fields: [mainSupplierId], references: [id])
+  autoPurchaseOrder Boolean   @default(false) @map("auto_purchase_order")
+  status            String    @default("ACTIVE") // ACTIVE | INACTIVE
+
+  stockByLocations   StockByLocation[]
+  movements          InventoryMovement[]
+  saleLines          SaleLine[]
+  purchaseOrderLines PurchaseOrderLine[]
+  alerts             StockAlert[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("products")
+}
+
+model Location {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String
+  parentId  String?    @map("parent_id") @db.Uuid
+  parent    Location?  @relation("LocationTree", fields: [parentId], references: [id])
+  children  Location[] @relation("LocationTree")
+  status    String     @default("ACTIVE")
+
+  stockByLocations StockByLocation[]
+  movementsFrom    InventoryMovement[] @relation("MovementsFrom")
+  movementsTo      InventoryMovement[] @relation("MovementsTo")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("locations")
+}
+
+model StockByLocation {
+  productId  String   @map("product_id") @db.Uuid
+  locationId String   @map("location_id") @db.Uuid
+  quantity   Decimal  @default(0) @db.Decimal(14, 3)
+
+  product    Product  @relation(fields: [productId], references: [id])
+  location   Location @relation(fields: [locationId], references: [id])
+
+  @@id([productId, locationId])
+  @@map("stock_by_location")
+}
+
+// ----------------------------------------------------
+// 2. MOVIMIENTOS DE INVENTARIO (LIBRO MAYOR INMUTABLE)
+// ----------------------------------------------------
+
+enum InventoryMovementType {
+  ENTRADA
+  SALIDA
+  TRASLADO
+  AJUSTE
+  MERMA
+  DEVOLUCION
+}
+
+model InventoryMovement {
+  id             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productId      String                @map("product_id") @db.Uuid
+  product        Product               @relation(fields: [productId], references: [id])
+  fromLocationId String?               @map("from_location_id") @db.Uuid
+  fromLocation   Location?             @relation("MovementsFrom", fields: [fromLocationId], references: [id])
+  toLocationId   String?               @map("to_location_id") @db.Uuid
+  toLocation     Location?             @relation("MovementsTo", fields: [toLocationId], references: [id])
+  type           InventoryMovementType
+  quantity       Decimal               @db.Decimal(14, 3)
+  unitCost       Decimal?              @map("unit_cost") @db.Decimal(14, 4)
+  referenceType  String?               @map("reference_type") // SALE, RECEIPT, ADJUSTMENT, MERMA
+  referenceId    String?               @map("reference_id") @db.Uuid
+  reason         String?
+  clientOpId     String?               @unique @map("client_op_id") @db.Uuid
+  userId         String                @map("user_id") @db.Uuid
+  authorizedBy   String?               @map("authorized_by") @db.Uuid
+  createdAt      DateTime              @default(now()) @map("created_at")
+
+  @@map("inventory_movements")
+}
+
+// ----------------------------------------------------
+// 3. VENTAS Y POS
+// ----------------------------------------------------
+
+enum PaymentType {
+  CONTADO
+  CREDITO
+}
+
+enum SaleStatus {
+  CONFIRMED
+  VOIDED
+}
+
+model Sale {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  number        Int          @unique // Consecutivo atómico oficial mediante tabla Counters
+  customerId    String?      @map("customer_id") @db.Uuid
+  customer      Customer?    @relation(fields: [customerId], references: [id])
+  paymentType   PaymentType  @map("payment_type")
+  total         Decimal      @db.Decimal(16, 2)
+  status        SaleStatus   @default(CONFIRMED)
+  cashSessionId String?      @map("cash_session_id") @db.Uuid
+  cashSession   CashSession? @relation(fields: [cashSessionId], references: [id])
+  clientOpId    String?      @unique @map("client_op_id") @db.Uuid
+  userId        String       @map("user_id") @db.Uuid
+  voidReason    String?      @map("void_reason")
+  voidedBy      String?      @map("voided_by") @db.Uuid
+  voidedAt      DateTime?    @map("voided_at")
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  lines SaleLine[]
+
+  @@map("sales")
+}
+
+model SaleLine {
+  id        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  saleId    String  @map("sale_id") @db.Uuid
+  sale      Sale    @relation(fields: [saleId], references: [id])
+  productId String  @map("product_id") @db.Uuid
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Decimal @db.Decimal(14, 3)
+  unitPrice Decimal @map("unit_price") @db.Decimal(14, 4)
+  lineTotal Decimal @map("line_total") @db.Decimal(16, 2)
+
+  @@map("sale_lines")
+}
+
+// ----------------------------------------------------
+// 4. CLIENTES Y CUENTA CORRIENTE (CRÉDITO)
+// ----------------------------------------------------
+
+model Customer {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  documentId  String?  @map("document_id") // Cédula o RNC
+  phone       String?
+  address     String?
+  creditLimit Decimal  @default(0) @map("credit_limit") @db.Decimal(16, 2)
+  balance     Decimal  @default(0) @db.Decimal(16, 2) // Saldo en caché sincronizado transaccionalmente
+  status      String   @default("ACTIVE") // ACTIVE | BLOCKED
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  sales  Sale[]
+  ledger CustomerLedger[]
+
+  @@map("customers")
+}
+
+enum CustomerLedgerType {
+  VENTA
+  ABONO
+  AJUSTE
+  ANULACION
+}
+
+model CustomerLedger {
+  id          String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId  String             @map("customer_id") @db.Uuid
+  customer    Customer           @relation(fields: [customerId], references: [id])
+  type        CustomerLedgerType
+  amount      Decimal            @db.Decimal(16, 2) // Positivo incrementa deuda, negativo reduce
+  referenceId String?            @map("reference_id") @db.Uuid
+  note        String?
+  userId      String             @map("user_id") @db.Uuid
+  createdAt   DateTime           @default(now()) @map("created_at")
+
+  @@map("customer_ledger")
+}
+
+// ----------------------------------------------------
+// 5. CAJA Y ARQUEO
+// ----------------------------------------------------
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+}
+
+model CashSession {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionNumber  Int               @map("session_number")
+  userId         String            @map("user_id") @db.Uuid
+  openingAmount  Decimal           @map("opening_amount") @db.Decimal(16, 2)
+  expectedAmount Decimal           @default(0) @map("expected_amount") @db.Decimal(16, 2)
+  countedAmount  Decimal?          @map("counted_amount") @db.Decimal(16, 2)
+  difference     Decimal?          @db.Decimal(16, 2)
+  diffReason     String?           @map("diff_reason")
+  status         CashSessionStatus @default(OPEN)
+  openedAt       DateTime          @default(now()) @map("opened_at")
+  closedAt       DateTime?         @map("closed_at")
+
+  sales     Sale[]
+  movements CashMovement[]
+
+  @@map("cash_sessions")
+}
+
+enum CashMovementType {
+  VENTA_EFECTIVO
+  ABONO_EFECTIVO
+  INGRESO_MANUAL
+  RETIRO_MANUAL
+}
+
+model CashMovement {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cashSessionId String           @map("cash_session_id") @db.Uuid
+  cashSession   CashSession      @relation(fields: [cashSessionId], references: [id])
+  type          CashMovementType
+  amount        Decimal          @db.Decimal(16, 2)
+  reason        String?
+  userId        String           @map("user_id") @db.Uuid
+  authorizedBy  String?          @map("authorized_by") @db.Uuid
+  createdAt     DateTime         @default(now()) @map("created_at")
+
+  @@map("cash_movements")
+}
+
+// ----------------------------------------------------
+// 6. COMPRAS, PROVEEDORES Y CUENTAS POR PAGAR
+// ----------------------------------------------------
+
+model Supplier {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String
+  rnc          String?
+  phone        String?
+  address      String?
+  contact      String?
+  paymentTerms String?  @map("payment_terms")
+  balance      Decimal  @default(0) @db.Decimal(16, 2)
+  status       String   @default("ACTIVE")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  products       Product[]
+  purchaseOrders PurchaseOrder[]
+  ledger         SupplierLedger[]
+
+  @@map("suppliers")
+}
+
+enum PurchaseOrderStatus {
+  BORRADOR
+  PENDIENTE
+  PARCIAL
+  RECIBIDA
+  CANCELADA
+}
+
+model PurchaseOrder {
+  id          String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderNumber Int                 @unique @map("order_number")
+  supplierId  String              @map("supplier_id") @db.Uuid
+  supplier    Supplier            @relation(fields: [supplierId], references: [id])
+  status      PurchaseOrderStatus @default(BORRADOR)
+  total       Decimal             @default(0) @db.Decimal(16, 2)
+  createdBy   String              @map("created_by") @db.Uuid
+  createdAt   DateTime            @default(now()) @map("created_at")
+
+  lines    PurchaseOrderLine[]
+  receipts GoodsReceipt[]
+
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchaseOrderId String        @map("purchase_order_id") @db.Uuid
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  productId       String        @map("product_id") @db.Uuid
+  product         Product       @relation(fields: [productId], references: [id])
+  quantity        Decimal       @db.Decimal(14, 3)
+  receivedQty     Decimal       @default(0) @map("received_qty") @db.Decimal(14, 3)
+  unitCost        Decimal       @map("unit_cost") @db.Decimal(14, 4)
+  lineTotal       Decimal       @map("line_total") @db.Decimal(16, 2)
+
+  @@map("purchase_order_lines")
+}
+
+model GoodsReceipt {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  receiptNumber   Int           @map("receipt_number")
+  purchaseOrderId String        @map("purchase_order_id") @db.Uuid
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  locationId      String        @map("location_id") @db.Uuid
+  createdBy       String        @map("created_by") @db.Uuid
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  @@map("goods_receipts")
+}
+
+enum SupplierLedgerType {
+  COMPRA
+  PAGO
+  AJUSTE
+}
+
+model SupplierLedger {
+  id          String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  supplierId  String             @map("supplier_id") @db.Uuid
+  supplier    Supplier           @relation(fields: [supplierId], references: [id])
+  type        SupplierLedgerType
+  amount      Decimal            @db.Decimal(16, 2)
+  referenceId String?            @map("reference_id") @db.Uuid
+  note        String?
+  userId      String             @map("user_id") @db.Uuid
+  createdAt   DateTime           @default(now()) @map("created_at")
+
+  @@map("supplier_ledger")
+}
+
+// ----------------------------------------------------
+// 7. ALERTAS DE STOCK Y REPOSICIÓN
+// ----------------------------------------------------
+
+enum StockAlertStatus {
+  OPEN
+  CLOSED
+}
+
+model StockAlert {
+  id           String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productId    String           @map("product_id") @db.Uuid
+  product      Product          @relation(fields: [productId], references: [id])
+  currentStock Decimal          @map("current_stock") @db.Decimal(14, 3)
+  minStock     Decimal          @map("min_stock") @db.Decimal(14, 3)
+  suggestedQty Decimal          @map("suggested_qty") @db.Decimal(14, 3)
+  status       StockAlertStatus @default(OPEN)
+  createdAt    DateTime         @default(now()) @map("created_at")
+
+  @@map("stock_alerts")
+}
+
+// ----------------------------------------------------
+// 8. USUARIOS, ROLES Y PERMISOS (RBAC GRANULAR)
+// ----------------------------------------------------
+
+model User {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String
+  email        String   @unique
+  pinHash      String   @map("pin_hash")
+  passwordHash String?  @map("password_hash")
+  roleId       String   @map("role_id") @db.Uuid
+  role         Role     @relation(fields: [roleId], references: [id])
+  status       String   @default("ACTIVE")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("users")
+}
+
+model Role {
+  id          String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String           @unique
+  description String?
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id    String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code  String           @unique // Ej: VENTAS.ANULAR, CREDITO.EXCEDER_LIMITE
+  name  String
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id])
+  permission   Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ----------------------------------------------------
+// 9. AUDITORÍA INMUTABLE
+// ----------------------------------------------------
+
+model AuditLog {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  action       String   // CREATE, UPDATE, VOID, APPROVE, LOGIN
+  entity       String   // SALE, INVENTORY, CASH, CUSTOMER
+  entityId     String?  @map("entity_id") @db.Uuid
+  beforeState  Json?    @map("before_state")
+  afterState   Json?    @map("after_state")
+  ipAddress    String?  @map("ip_address")
+  clientOpId   String?  @map("client_op_id") @db.Uuid
+  authorizedBy String?  @map("authorized_by") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("audit_log")
+}
+
+// ----------------------------------------------------
+// 10. CONSECUTIVOS SEGUROS (COUNTERS ATÓMICOS)
+// ----------------------------------------------------
+
+model Counter {
+  series    String @id // Ej: "SALES", "PURCHASE_ORDERS", "RECEIPTS"
+  lastValue Int    @default(0) @map("last_value")
+
+  @@map("counters")
+}
