@@ -39,7 +39,7 @@ export async function POST(request: Request) {
       autoPurchaseOrder: Boolean(body.autoPurchaseOrder),
       status: "ACTIVE",
       currentStock: body.initialStock || "0.000",
-      iconId: body.iconId || "beef-cut",
+      iconId: body.iconId || "carne",
     });
 
     return NextResponse.json(newProd, { status: 201 });
@@ -76,7 +76,7 @@ export async function PUT(request: Request) {
       minStock: String(body.minStock ?? product.minStock),
       targetStock: String(body.targetStock ?? product.targetStock),
       autoPurchaseOrder: Boolean(body.autoPurchaseOrder),
-      iconId: body.iconId || "beef-cut",
+      iconId: body.iconId || "carne",
     });
 
     return NextResponse.json(updated);

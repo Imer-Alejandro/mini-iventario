@@ -12,8 +12,8 @@ import {
   Pencil,
 } from "lucide-react";
 import { formatCurrencyRD } from "@/lib/money";
-import { MeatBadge } from "@/lib/icons/meat-icons";
-import { MeatIconPicker } from "@/app/components/MeatIconPicker";
+import { DEFAULT_MEAT_ICON_ID, MeatBadge } from "@/lib/icons/meat-icons";
+import { MeatIconPicker, MeatIconPickerModal } from "@/app/components/MeatIconPicker";
 
 interface Product {
   id: string;
@@ -63,12 +63,14 @@ export default function InventarioPage() {
     minStock: "0",
     targetStock: "0",
     autoPurchaseOrder: false,
-    iconId: "beef-cut",
+    iconId: DEFAULT_MEAT_ICON_ID,
   });
 
   // Modales
   const [isMermaModalOpen, setIsMermaModalOpen] = useState(false);
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [iconAssignProduct, setIconAssignProduct] = useState<Product | null>(null);
+  const [isSavingIcon, setIsSavingIcon] = useState(false);
 
   // Form states para Merma
   const [mermaProduct, setMermaProduct] = useState("");
@@ -114,7 +116,7 @@ export default function InventarioPage() {
       minStock: product?.minStock || "0",
       targetStock: product?.targetStock || "0",
       autoPurchaseOrder: product?.autoPurchaseOrder ?? false,
-      iconId: product?.iconId || "beef-cut",
+      iconId: product?.iconId || DEFAULT_MEAT_ICON_ID,
     });
     setIsProductModalOpen(true);
   };
@@ -150,6 +152,30 @@ export default function InventarioPage() {
       setProductError(error instanceof Error ? error.message : "No se pudo guardar el producto.");
     } finally {
       setIsSavingProduct(false);
+    }
+  };
+
+  const handleAssignIcon = async (iconId: string) => {
+    if (!iconAssignProduct) return;
+    try {
+      setIsSavingIcon(true);
+      setActionError(null);
+      const response = await fetch("/api/products", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...iconAssignProduct,
+          iconId,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "No se pudo asignar el icono.");
+      setIconAssignProduct(null);
+      fetchInventory();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "No se pudo asignar el icono.");
+    } finally {
+      setIsSavingIcon(false);
     }
   };
 
@@ -375,6 +401,12 @@ export default function InventarioPage() {
         </div>
       )}
 
+      {actionError && !isMermaModalOpen && !isTransferModalOpen && (
+        <p role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+          {actionError}
+        </p>
+      )}
+
       {/* Tabla de Productos y Stock Actual */}
       <div className="bg-white rounded-3xl p-6 shadow-xs border border-slate-200/80 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -413,7 +445,14 @@ export default function InventarioPage() {
                     <td className="py-2.5 px-3 font-mono font-bold text-slate-400">{p.code}</td>
                     <td className="py-2.5 px-3">
                       <div className="flex items-center gap-2.5">
-                        <MeatBadge iconId={p.iconId} size="sm" />
+                        <button
+                          type="button"
+                          onClick={() => setIconAssignProduct(p)}
+                          title="Asignar icono"
+                          className="rounded-xl transition hover:scale-105"
+                        >
+                          <MeatBadge iconId={p.iconId} size="sm" />
+                        </button>
                         <div>
                           <span className="block font-semibold text-slate-900">{p.name}</span>
                           <span className="text-[10px] text-slate-400">{categories.find((category) => category.id === p.categoryId)?.name || "Sin categoría"}</span>
@@ -508,7 +547,11 @@ export default function InventarioPage() {
             </div>
 
             <div className="mt-5">
-              <MeatIconPicker selectedIconId={productForm.iconId} onSelect={(iconId) => setProductForm({ ...productForm, iconId })} />
+              <MeatIconPicker
+                selectedIconId={productForm.iconId}
+                productName={productForm.name}
+                onSelect={(iconId) => setProductForm({ ...productForm, iconId })}
+              />
             </div>
             <label className="mt-4 flex items-center gap-2 text-xs font-medium text-slate-600">
               <input type="checkbox" checked={productForm.autoPurchaseOrder} onChange={(event) => setProductForm({ ...productForm, autoPurchaseOrder: event.target.checked })} className="h-4 w-4 accent-emerald-700" />
@@ -522,6 +565,22 @@ export default function InventarioPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {iconAssignProduct && (
+        <MeatIconPickerModal
+          selectedIconId={iconAssignProduct.iconId || DEFAULT_MEAT_ICON_ID}
+          productName={iconAssignProduct.name}
+          onClose={() => setIconAssignProduct(null)}
+          onSelect={handleAssignIcon}
+        />
+      )}
+      {isSavingIcon && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-6 z-[95] flex justify-center">
+          <span className="rounded-full bg-slate-900 px-4 py-2 text-xs font-bold text-white shadow-lg">
+            Guardando icono...
+          </span>
         </div>
       )}
 
