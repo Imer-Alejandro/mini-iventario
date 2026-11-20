@@ -7,7 +7,13 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx lib/money/__tests__/money.test.ts && tsx server/services/__tests__/domain-services.test.ts && tsx lib/offline/__tests__/offline.test.ts"
+    "test": "node scripts/run-tests.mjs && node scripts/test-sqlite.mjs",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:setup": "node scripts/db-setup.mjs",
+    "db:setup:production": "node scripts/db-setup.mjs --production",
+    "db:backup": "node scripts/backup-database.mjs",
+    "db:backup:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-backup-task.ps1"
   },
   "dependencies": {
     "@prisma/client": "^6.4.1",
@@ -32,5 +38,8 @@
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   }
 }

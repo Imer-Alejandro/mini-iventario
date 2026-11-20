@@ -20,6 +20,15 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## SQLite y copias de seguridad
+
+- En desarrollo, `DATABASE_URL="file:./dev.db"` usa `prisma/dev.db`.
+- Para preparar una instalación nueva, ejecuta `npm run db:setup` en desarrollo o `npm run db:setup:production` en el equipo del cliente antes de iniciar la aplicación. La semilla solo se aplica si la base no contiene categorías.
+- En producción, Windows guarda la base fuera del repositorio en `%ProgramData%\MiniInventario`. En macOS y Linux usa la carpeta de datos local del usuario. `MINI_INVENTARIO_DATA_DIR` permite definir otra ruta.
+- Las copias se crean de forma consistente con SQLite en la carpeta `backups` junto a la base; se conservan 30 días por defecto. `MINI_INVENTARIO_BACKUP_RETENTION_DAYS` permite cambiar el plazo.
+- Ejecuta `npm run db:backup` para una copia manual. En Windows, `npm run db:backup:install` registra la tarea diaria a las 02:00 para el usuario actual.
+- Para restaurar, detén la aplicación, conserva una copia del archivo actual y reemplázalo con la copia elegida antes de iniciar de nuevo.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

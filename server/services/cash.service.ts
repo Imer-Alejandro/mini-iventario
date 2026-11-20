@@ -1,10 +1,7 @@
 import Decimal from "decimal.js";
 import { prisma } from "@/lib/db";
 import {
-  AMOUNT_RE,
-  DOP_DENOMINATIONS,
   calculateCountedCash,
-  formatCurrencyRD,
 } from "@/lib/money";
 import { store, CashSessionData, CashMovementData } from "./data-store";
 import { recordAudit } from "./audit.service";
@@ -17,6 +14,7 @@ export interface OpenSessionParams {
 
 export interface RecordCashMovementParams {
   cashSessionId: string;
+  clientOpId?: string;
   type: "VENTA_EFECTIVO" | "ABONO_EFECTIVO" | "INGRESO_MANUAL" | "RETIRO_MANUAL";
   amount: string; // DECIMAL(16,2)
   reason?: string;
@@ -51,11 +49,81 @@ export interface CashSessionReport {
   isBalanced: boolean;
 }
 
+type PersistedSessionFields = {
+  userName?: string;
+  denominationBreakdown?: string | null;
+};
+
+function getPersistedUserName(session: object): string {
+  return "userName" in session && typeof session.userName === "string"
+    ? session.userName
+    : "";
+}
+
+function mapPersistedCashSession(
+  session: NonNullable<Awaited<ReturnType<typeof prisma.cashSession.findUnique>>> & PersistedSessionFields,
+): CashSessionData {
+  return {
+    id: session.id,
+    sessionNumber: session.sessionNumber,
+    userId: session.userId,
+    userName: getPersistedUserName(session),
+    openingAmount: session.openingAmount.toFixed(2),
+    expectedAmount: session.expectedAmount.toFixed(2),
+    countedAmount: session.countedAmount?.toFixed(2),
+    difference: session.difference?.toFixed(2),
+    diffReason: session.diffReason ?? undefined,
+    status: session.status as CashSessionData["status"],
+    openedAt: session.openedAt,
+    closedAt: session.closedAt ?? undefined,
+    denominationBreakdown: session.denominationBreakdown
+      ? JSON.parse(session.denominationBreakdown) as Record<string, number>
+      : undefined,
+  };
+}
+
 /**
  * Abre un turno de caja con fondo inicial.
  * Regla: Solo una caja abierta simultáneamente por estación/cajero.
  */
 export async function openCashSession(params: OpenSessionParams): Promise<CashSessionData> {
+  if (process.env.NODE_ENV !== "test") {
+    const opening = new Decimal(params.openingAmount || "0");
+    if (opening.isNegative()) throw new Error("El fondo de apertura no puede ser negativo");
+    return prisma.$transaction(async (tx) => {
+      const active = await tx.cashSession.findFirst({ where: { status: "OPEN" } });
+      if (active) {
+        throw new Error(`Ya existe una caja abierta (#${active.sessionNumber}) a nombre de ${getPersistedUserName(active)}. Debe cerrarla antes de abrir una nueva.`);
+      }
+      const counter = await tx.counter.upsert({
+        where: { series: "CASH_SESSIONS" },
+        create: { series: "CASH_SESSIONS", lastValue: 1 },
+        update: { lastValue: { increment: 1 } },
+      });
+      const amount = opening.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
+      const session = await tx.cashSession.create({
+        data: {
+          sessionNumber: counter.lastValue,
+          userId: params.userId,
+          userName: params.userName,
+          openingAmount: amount,
+          expectedAmount: amount,
+          status: "OPEN",
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: params.userId,
+          action: "OPEN",
+          entity: "CASH",
+          entityId: session.id,
+          afterState: { openingAmount: amount, sessionNumber: session.sessionNumber },
+        },
+      });
+      return mapPersistedCashSession(session);
+    });
+  }
+
   const openingDec = new Decimal(params.openingAmount || "0");
   if (openingDec.isNegative()) {
     throw new Error("El fondo de apertura no puede ser negativo");
@@ -92,6 +160,76 @@ export async function openCashSession(params: OpenSessionParams): Promise<CashSe
  * Registra un movimiento de caja (Venta, Abono, Ingreso, Retiro)
  */
 export async function recordCashMovement(params: RecordCashMovementParams): Promise<CashMovementData> {
+  if (process.env.NODE_ENV !== "test") {
+    const amount = new Decimal(params.amount);
+    if (amount.isZero() || amount.isNegative()) throw new Error("El monto del movimiento debe ser un número positivo mayor que cero");
+    if ((params.type === "RETIRO_MANUAL" || params.type === "INGRESO_MANUAL") && !params.reason?.trim()) {
+      throw new Error("Los retiros e ingresos manuales exigen un motivo obligatorio");
+    }
+    if (params.type === "RETIRO_MANUAL" && amount.greaterThan(1000) && !params.authorizedBy) {
+      throw new Error("Los retiros mayores a RD$ 1,000.00 requieren autorización de supervisor");
+    }
+
+    return prisma.$transaction(async (tx) => {
+      if (params.clientOpId) {
+        const existing = await tx.cashMovement.findFirst({ where: { clientOpId: params.clientOpId } });
+        if (existing) {
+          return {
+            ...existing,
+            type: existing.type as CashMovementData["type"],
+            amount: existing.amount.toFixed(2),
+            reason: existing.reason ?? undefined,
+            authorizedBy: existing.authorizedBy ?? undefined,
+          };
+        }
+      }
+      const session = await tx.cashSession.findUnique({ where: { id: params.cashSessionId } });
+      if (!session) throw new Error("La sesión de caja especificada no existe");
+      if (session.status !== "OPEN") throw new Error("No se pueden registrar movimientos en una caja ya cerrada");
+      const amountStr = amount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
+      const current = new Decimal(session.expectedAmount.toString());
+      const next = ["VENTA_EFECTIVO", "ABONO_EFECTIVO", "INGRESO_MANUAL"].includes(params.type)
+        ? current.plus(amount)
+        : current.minus(amount);
+      if (next.isNegative()) {
+        throw new Error(`Retiro denegado: el monto (RD$ ${amountStr}) supera el efectivo disponible en caja (RD$ ${session.expectedAmount})`);
+      }
+
+      const movement = await tx.cashMovement.create({
+        data: {
+          cashSessionId: session.id,
+          type: params.type,
+          amount: amountStr,
+          clientOpId: params.clientOpId,
+          reason: params.reason,
+          userId: params.userId,
+          authorizedBy: params.authorizedBy,
+        },
+      });
+      await tx.cashSession.update({
+        where: { id: session.id },
+        data: { expectedAmount: next.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2) },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: params.userId,
+          action: "CASH_MOVEMENT",
+          entity: "CASH",
+          entityId: movement.id,
+          afterState: { type: movement.type, amount: amountStr, newExpected: next.toFixed(2) },
+          authorizedBy: params.authorizedBy,
+        },
+      });
+      return {
+        ...movement,
+        type: movement.type as CashMovementData["type"],
+        amount: movement.amount.toFixed(2),
+        reason: movement.reason ?? undefined,
+        authorizedBy: movement.authorizedBy ?? undefined,
+      };
+    });
+  }
+
   const session = store.getCashSessions().find((s) => s.id === params.cashSessionId);
   if (!session) {
     throw new Error("La sesión de caja especificada no existe");
@@ -160,6 +298,54 @@ export async function recordCashMovement(params: RecordCashMovementParams): Prom
  * Obtiene el reporte y estado financiero en vivo de la caja
  */
 export async function getCashSessionReport(sessionId: string): Promise<CashSessionReport> {
+  if (process.env.NODE_ENV !== "test") {
+    const session = await prisma.cashSession.findUnique({
+      where: { id: sessionId },
+      include: { movements: true },
+    });
+    if (!session) throw new Error("Sesión de caja no encontrada");
+
+    const totals = {
+      cashSales: new Decimal(0),
+      customerAbonos: new Decimal(0),
+      manualIngresos: new Decimal(0),
+      manualRetiros: new Decimal(0),
+    };
+    for (const movement of session.movements) {
+      const amount = new Decimal(movement.amount.toString());
+      switch (movement.type) {
+        case "VENTA_EFECTIVO": totals.cashSales = totals.cashSales.plus(amount); break;
+        case "ABONO_EFECTIVO": totals.customerAbonos = totals.customerAbonos.plus(amount); break;
+        case "INGRESO_MANUAL": totals.manualIngresos = totals.manualIngresos.plus(amount); break;
+        case "RETIRO_MANUAL": totals.manualRetiros = totals.manualRetiros.plus(amount); break;
+      }
+    }
+    const opening = new Decimal(session.openingAmount.toString());
+    const expected = opening.plus(totals.cashSales).plus(totals.customerAbonos)
+      .plus(totals.manualIngresos).minus(totals.manualRetiros);
+    const difference = session.difference === null
+      ? null
+      : new Decimal(session.difference.toString());
+    return {
+      sessionId: session.id,
+      sessionNumber: session.sessionNumber,
+      userName: session.userName,
+      status: session.status as CashSessionReport["status"],
+      openingAmount: opening.toFixed(2),
+      cashSales: totals.cashSales.toFixed(2),
+      customerAbonos: totals.customerAbonos.toFixed(2),
+      manualIngresos: totals.manualIngresos.toFixed(2),
+      manualRetiros: totals.manualRetiros.toFixed(2),
+      expectedAmount: expected.toFixed(2),
+      countedAmount: session.countedAmount?.toFixed(2) ?? null,
+      difference: difference?.toFixed(2) ?? null,
+      diffReason: session.diffReason ?? null,
+      openedAt: session.openedAt,
+      closedAt: session.closedAt,
+      isBalanced: difference?.isZero() ?? false,
+    };
+  }
+
   const session = store.getCashSessions().find((s) => s.id === sessionId);
   if (!session) {
     throw new Error("Sesión de caja no encontrada");
@@ -224,6 +410,90 @@ export async function getCashSessionReport(sessionId: string): Promise<CashSessi
  * - Congela la sesión en estado CLOSED (inmutable)
  */
 export async function closeCashSession(params: CloseSessionParams): Promise<CashSessionReport> {
+  if (process.env.NODE_ENV !== "test") {
+    return prisma.$transaction(async (tx) => {
+      const session = await tx.cashSession.findUnique({ where: { id: params.cashSessionId } });
+      if (!session) throw new Error("Sesión de caja no encontrada");
+      if (session.status === "CLOSED") throw new Error("Esta caja ya se encuentra cerrada e inmutable");
+      let counted: Decimal;
+      if (params.denominationCounts) {
+        counted = new Decimal(calculateCountedCash(params.denominationCounts));
+      } else if (params.countedAmount !== undefined) {
+        counted = new Decimal(params.countedAmount);
+      } else {
+        throw new Error("Debe ingresar el efectivo contado o el desglose de billetes/monedas");
+      }
+      if (counted.isNegative()) throw new Error("El efectivo contado no puede ser negativo");
+      const movements = await tx.cashMovement.findMany({ where: { cashSessionId: session.id } });
+      const total = movements.reduce((value, movement) => {
+        const amount = new Decimal(movement.amount.toString());
+        return ["RETIRO_MANUAL"].includes(movement.type)
+          ? value.minus(amount)
+          : value.plus(amount);
+      }, new Decimal(session.openingAmount.toString()));
+      const difference = counted.minus(total);
+      if (!difference.isZero() && !params.diffReason?.trim()) {
+        const tipo = difference.isNegative() ? "Faltante" : "Sobrante";
+        throw new Error(`Hay una diferencia de ${tipo} de RD$ ${Math.abs(difference.toNumber()).toFixed(2)}. Debe ingresar una justificación obligatoria del descuadre.`);
+      }
+      const countedAmount = counted.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
+      const differenceAmount = difference.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
+      await tx.cashSession.update({
+        where: { id: session.id },
+        data: {
+          status: "CLOSED",
+          countedAmount,
+          difference: differenceAmount,
+          diffReason: params.diffReason?.trim() || null,
+          closedAt: new Date(),
+          denominationBreakdown: params.denominationCounts ? JSON.stringify(params.denominationCounts) : null,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: params.userId,
+          action: "CASH_CLOSE",
+          entity: "CASH",
+          entityId: session.id,
+          afterState: {
+            expected: total.toFixed(2),
+            counted: countedAmount,
+            difference: differenceAmount,
+            reason: params.diffReason,
+          },
+        },
+      });
+      const finalSession = await tx.cashSession.findUniqueOrThrow({
+        where: { id: session.id },
+        include: { movements: true },
+      });
+      const finalExpected = new Decimal(finalSession.openingAmount.toString()).plus(
+        finalSession.movements.reduce((value, movement) => {
+          const amount = new Decimal(movement.amount.toString());
+          return movement.type === "RETIRO_MANUAL" ? value.minus(amount) : value.plus(amount);
+        }, new Decimal(0)),
+      );
+      return {
+        sessionId: session.id,
+        sessionNumber: session.sessionNumber,
+        userName: session.userName,
+        status: "CLOSED",
+        openingAmount: session.openingAmount.toFixed(2),
+        cashSales: movements.filter((item) => item.type === "VENTA_EFECTIVO").reduce((v, item) => v.plus(item.amount.toString()), new Decimal(0)).toFixed(2),
+        customerAbonos: movements.filter((item) => item.type === "ABONO_EFECTIVO").reduce((v, item) => v.plus(item.amount.toString()), new Decimal(0)).toFixed(2),
+        manualIngresos: movements.filter((item) => item.type === "INGRESO_MANUAL").reduce((v, item) => v.plus(item.amount.toString()), new Decimal(0)).toFixed(2),
+        manualRetiros: movements.filter((item) => item.type === "RETIRO_MANUAL").reduce((v, item) => v.plus(item.amount.toString()), new Decimal(0)).toFixed(2),
+        expectedAmount: finalExpected.toFixed(2),
+        countedAmount,
+        difference: differenceAmount,
+        diffReason: params.diffReason?.trim() || null,
+        openedAt: session.openedAt,
+        closedAt: finalSession.closedAt,
+        isBalanced: difference.isZero(),
+      };
+    });
+  }
+
   const session = store.getCashSessions().find((s) => s.id === params.cashSessionId);
   if (!session) {
     throw new Error("Sesión de caja no encontrada");

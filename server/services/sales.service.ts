@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import { store, SaleData, SaleLineData } from "./data-store";
+import { DEFAULT_SALES_LOCATION_ID, store, SaleData, SaleLineData } from "./data-store";
 import {
   calculateLineTotal,
   sumLineTotals,
@@ -10,6 +10,8 @@ import { recordAudit } from "./audit.service";
 import { recordCashMovement } from "./cash.service";
 import { recordCustomerLedgerMovement, checkCustomerCredit } from "./credit.service";
 import { recordInventoryMovement } from "./inventory.service";
+import { prisma } from "@/lib/db";
+import { checkCreditAvailability } from "@/lib/money";
 
 export interface SaleItemInput {
   productId: string;
@@ -36,6 +38,205 @@ export interface VoidSaleParams {
   supervisorPin?: string;
 }
 
+function mapPersistedSale(
+  sale: Awaited<ReturnType<typeof prisma.sale.findUniqueOrThrow>> & { lines: Array<{ id: string; saleId: string; productId: string; productName: string; quantity: import("@prisma/client").Prisma.Decimal; unitPrice: import("@prisma/client").Prisma.Decimal; lineTotal: import("@prisma/client").Prisma.Decimal }> },
+  customerName?: string,
+): SaleData {
+  return {
+    id: sale.id,
+    number: sale.number,
+    customerId: sale.customerId ?? undefined,
+    customerName,
+    paymentType: sale.paymentType as SaleData["paymentType"],
+    total: sale.total.toFixed(2),
+    status: sale.status as SaleData["status"],
+    cashSessionId: sale.cashSessionId ?? undefined,
+    clientOpId: sale.clientOpId ?? undefined,
+    userId: sale.userId,
+    voidReason: sale.voidReason ?? undefined,
+    voidedBy: sale.voidedBy ?? undefined,
+    voidedAt: sale.voidedAt ?? undefined,
+    createdAt: sale.createdAt,
+    lines: sale.lines.map((line) => ({
+      id: line.id,
+      saleId: line.saleId,
+      productId: line.productId,
+      productName: line.productName,
+      quantity: line.quantity.toFixed(3),
+      unitPrice: line.unitPrice.toFixed(4),
+      lineTotal: line.lineTotal.toFixed(2),
+    })),
+  };
+}
+
+async function createPersistedSale(params: CreateSaleParams): Promise<SaleData> {
+  if (!params.lines?.length) throw new Error("La venta debe contener al menos un producto");
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      if (params.clientOpId) {
+        const existing = await tx.sale.findUnique({
+          where: { clientOpId: params.clientOpId },
+          include: { lines: true, customer: true },
+        });
+        if (existing) return mapPersistedSale(existing, existing.customer?.name);
+      }
+
+      const items = await Promise.all(params.lines.map(async (item) => {
+        const product = await tx.product.findUnique({ where: { id: item.productId } });
+        if (!product) throw new Error(`Producto no encontrado: ${item.productId}`);
+        const price = item.unitPrice || product.price.toString();
+        return {
+          ...item,
+          product,
+          price: validateAndParsePrice(price).toFixed(4),
+          quantity: validateAndParseQty(item.quantity, product.allowsDecimals).toFixed(3),
+          lineTotal: calculateLineTotal(item.quantity, price, product.allowsDecimals),
+        };
+      }));
+      const total = sumLineTotals(items.map((item) => item.lineTotal));
+
+      let customer: Awaited<ReturnType<typeof tx.customer.findUnique>> = null;
+      if (params.paymentType === "CREDITO") {
+        if (!params.customerId) throw new Error("Una venta a crédito requiere especificar un cliente registrado");
+        customer = await tx.customer.findUnique({ where: { id: params.customerId } });
+        if (!customer) throw new Error("Cliente no encontrado para venta a crédito");
+        const check = checkCreditAvailability(customer.balance.toString(), customer.creditLimit.toString(), total);
+        if ((customer.status === "BLOCKED" || !check.allowed) && !params.authorizedBy) {
+          throw new Error(customer.status === "BLOCKED"
+            ? "El cliente está BLOQUEADO por morosidad o límite excedido."
+            : `La venta excede el límite de crédito en RD$ ${check.exceededAmount}. Requiere autorización de supervisor.`);
+        }
+      } else if (params.customerId) {
+        customer = await tx.customer.findUnique({ where: { id: params.customerId } });
+      }
+
+      const counter = await tx.counter.upsert({
+        where: { series: "SALES" },
+        create: { series: "SALES", lastValue: 155 },
+        update: { lastValue: { increment: 1 } },
+      });
+      const sale = await tx.sale.create({
+        data: {
+          number: counter.lastValue,
+          customerId: customer?.id,
+          paymentType: params.paymentType,
+          total,
+          clientOpId: params.clientOpId,
+          userId: params.userId,
+          lines: {
+            create: items.map((item) => ({
+              productId: item.product.id,
+              productName: item.product.name,
+              quantity: item.quantity,
+              unitPrice: item.price,
+              lineTotal: item.lineTotal,
+            })),
+          },
+        },
+        include: { lines: true },
+      });
+
+      for (const item of items) {
+        const quantity = new Decimal(item.quantity);
+        const product = await tx.product.findUniqueOrThrow({ where: { id: item.product.id } });
+        await tx.product.update({
+          where: { id: product.id },
+          data: { currentStock: new Decimal(product.currentStock.toString()).minus(quantity).toFixed(3) },
+        });
+
+        const locationId = item.locationId || DEFAULT_SALES_LOCATION_ID;
+        const stock = await tx.stockByLocation.findUnique({
+          where: { productId_locationId: { productId: product.id, locationId } },
+        });
+        const stockQuantity = new Decimal(stock?.quantity.toString() ?? "0").minus(quantity);
+        await tx.stockByLocation.upsert({
+          where: { productId_locationId: { productId: product.id, locationId } },
+          create: { productId: product.id, locationId, quantity: stockQuantity.toFixed(3) },
+          update: { quantity: stockQuantity.toFixed(3) },
+        });
+        await tx.inventoryMovement.create({
+          data: {
+            productId: product.id,
+            fromLocationId: locationId,
+            type: "SALIDA",
+            quantity: item.quantity,
+            referenceType: "SALE",
+            referenceId: sale.id,
+            reason: `Venta #${sale.number}`,
+            userId: params.userId,
+          },
+        });
+      }
+
+      let cashSessionId = params.cashSessionId;
+      if (params.paymentType === "CONTADO" && (!params.paymentMethod || params.paymentMethod === "EFECTIVO")) {
+        const cashSession = cashSessionId
+          ? await tx.cashSession.findUnique({ where: { id: cashSessionId } })
+          : await tx.cashSession.findFirst({ where: { status: "OPEN" } });
+        if (cashSession?.status === "OPEN") {
+          cashSessionId = cashSession.id;
+          await tx.cashMovement.create({
+            data: {
+              cashSessionId,
+              type: "VENTA_EFECTIVO",
+              amount: total,
+              reason: `Venta en mostrador #${sale.number}`,
+              userId: params.userId,
+            },
+          });
+          await tx.cashSession.update({
+            where: { id: cashSessionId },
+            data: { expectedAmount: new Decimal(cashSession.expectedAmount.toString()).plus(total).toFixed(2) },
+          });
+        }
+      } else if (params.paymentType === "CREDITO" && customer) {
+        await tx.customerLedger.create({
+          data: {
+            customerId: customer.id,
+            type: "VENTA",
+            amount: total,
+            referenceId: sale.id,
+            note: `Cargo por Venta a Crédito #${sale.number}`,
+            userId: params.userId,
+          },
+        });
+        await tx.customer.update({
+          where: { id: customer.id },
+          data: { balance: new Decimal(customer.balance.toString()).plus(total).toFixed(2) },
+        });
+      }
+
+      const savedSale = cashSessionId
+        ? await tx.sale.update({ where: { id: sale.id }, data: { cashSessionId }, include: { lines: true } })
+        : sale;
+
+      await tx.auditLog.create({
+        data: {
+          userId: params.userId,
+          action: "CREATE",
+          entity: "SALE",
+          entityId: sale.id,
+          afterState: { number: sale.number, total, paymentType: params.paymentType },
+          clientOpId: params.clientOpId,
+          authorizedBy: params.authorizedBy,
+        },
+      });
+
+      return mapPersistedSale(savedSale, customer?.name);
+    });
+  } catch (error) {
+    if (params.clientOpId && error instanceof Error && "code" in error && error.code === "P2002") {
+      const existing = await prisma.sale.findUnique({
+        where: { clientOpId: params.clientOpId },
+        include: { lines: true, customer: true },
+      });
+      if (existing) return mapPersistedSale(existing, existing.customer?.name);
+    }
+    throw error;
+  }
+}
+
 /**
  * Registra una venta garantizando:
  * 1. Aritmética decimal exacta (ROUND_HALF_UP)
@@ -45,6 +246,8 @@ export interface VoidSaleParams {
  * 5. Registro en caja (si es contado/efectivo) o cuenta corriente (si es crédito)
  */
 export async function createSale(params: CreateSaleParams): Promise<SaleData> {
+  if (process.env.NODE_ENV !== "test") return createPersistedSale(params);
+
   // 1. Idempotencia: Si ya se procesó esta operación offline, retornarla sin duplicar
   if (params.clientOpId) {
     const existing = store.getSaleByClientOpId(params.clientOpId);
@@ -132,7 +335,7 @@ export async function createSale(params: CreateSaleParams): Promise<SaleData> {
   for (const item of params.lines) {
     await recordInventoryMovement({
       productId: item.productId,
-      fromLocationId: item.locationId || "loc-003", // Mostrador por defecto
+      fromLocationId: item.locationId || DEFAULT_SALES_LOCATION_ID, // Mostrador por defecto
       type: "SALIDA",
       quantity: item.quantity,
       referenceType: "SALE",
@@ -190,6 +393,101 @@ export async function createSale(params: CreateSaleParams): Promise<SaleData> {
  * Se crea un contra-movimiento para revertir stock, caja o crédito.
  */
 export async function voidSale(params: VoidSaleParams): Promise<SaleData> {
+  if (process.env.NODE_ENV !== "test") {
+    return prisma.$transaction(async (tx) => {
+      const sale = await tx.sale.findUnique({
+        where: { id: params.saleId },
+        include: { lines: true, customer: true },
+      });
+      if (!sale) throw new Error("Venta no encontrada");
+      if (sale.status === "VOIDED") throw new Error(`La venta #${sale.number} ya fue anulada previamente`);
+      if (!params.voidReason?.trim()) throw new Error("Debe proporcionar un motivo obligatorio para anular la venta");
+
+      for (const line of sale.lines) {
+        const product = await tx.product.findUniqueOrThrow({ where: { id: line.productId } });
+        const quantity = new Decimal(line.quantity.toString());
+        await tx.product.update({
+          where: { id: product.id },
+          data: { currentStock: new Decimal(product.currentStock.toString()).plus(quantity).toFixed(3) },
+        });
+        const stock = await tx.stockByLocation.findUnique({
+          where: { productId_locationId: { productId: product.id, locationId: DEFAULT_SALES_LOCATION_ID } },
+        });
+        await tx.stockByLocation.upsert({
+          where: { productId_locationId: { productId: product.id, locationId: DEFAULT_SALES_LOCATION_ID } },
+          create: { productId: product.id, locationId: DEFAULT_SALES_LOCATION_ID, quantity: quantity.toFixed(3) },
+          update: { quantity: new Decimal(stock?.quantity.toString() ?? "0").plus(quantity).toFixed(3) },
+        });
+        await tx.inventoryMovement.create({
+          data: {
+            productId: product.id,
+            toLocationId: DEFAULT_SALES_LOCATION_ID,
+            type: "DEVOLUCION",
+            quantity: quantity.toFixed(3),
+            referenceType: "VOID",
+            referenceId: sale.id,
+            reason: `Anulación de Venta #${sale.number}: ${params.voidReason}`,
+            userId: params.voidedBy,
+          },
+        });
+      }
+
+      if (sale.paymentType === "CREDITO" && sale.customerId) {
+        const customer = await tx.customer.findUniqueOrThrow({ where: { id: sale.customerId } });
+        await tx.customerLedger.create({
+          data: {
+            customerId: customer.id,
+            type: "ANULACION",
+            amount: new Decimal(sale.total.toString()).negated().toFixed(2),
+            referenceId: sale.id,
+            note: `Reversión por Anulación de Venta #${sale.number}`,
+            userId: params.voidedBy,
+          },
+        });
+        await tx.customer.update({
+          where: { id: customer.id },
+          data: { balance: new Decimal(customer.balance.toString()).minus(sale.total.toString()).toFixed(2) },
+        });
+      }
+
+      if (sale.paymentType === "CONTADO" && sale.cashSessionId) {
+        const session = await tx.cashSession.findUnique({ where: { id: sale.cashSessionId } });
+        if (session?.status === "OPEN") {
+          await tx.cashMovement.create({
+            data: {
+              cashSessionId: session.id,
+              type: "RETIRO_MANUAL",
+              amount: sale.total.toString(),
+              reason: `Reversión por anulación de Venta #${sale.number}: ${params.voidReason}`,
+              userId: params.voidedBy,
+              authorizedBy: params.voidedBy,
+            },
+          });
+          await tx.cashSession.update({
+            where: { id: session.id },
+            data: { expectedAmount: new Decimal(session.expectedAmount.toString()).minus(sale.total.toString()).toFixed(2) },
+          });
+        }
+      }
+
+      const updated = await tx.sale.update({
+        where: { id: sale.id },
+        data: { status: "VOIDED", voidReason: params.voidReason, voidedBy: params.voidedBy, voidedAt: new Date() },
+        include: { lines: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: params.voidedBy,
+          action: "VOID",
+          entity: "SALE",
+          entityId: sale.id,
+          afterState: { voidReason: params.voidReason, voidedAt: updated.voidedAt?.toISOString() },
+        },
+      });
+      return mapPersistedSale(updated, sale.customer?.name);
+    });
+  }
+
   const sale = store.getSaleById(params.saleId);
   if (!sale) {
     throw new Error("Venta no encontrada");
@@ -207,7 +505,7 @@ export async function voidSale(params: VoidSaleParams): Promise<SaleData> {
   for (const line of sale.lines) {
     await recordInventoryMovement({
       productId: line.productId,
-      toLocationId: "loc-003",
+      toLocationId: DEFAULT_SALES_LOCATION_ID,
       type: "DEVOLUCION",
       quantity: line.quantity,
       referenceType: "VOID",

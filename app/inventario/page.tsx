@@ -10,6 +10,8 @@ import {
   X,
   Plus,
   Pencil,
+  MapPin,
+  Check,
 } from "lucide-react";
 import { formatCurrencyRD } from "@/lib/money";
 import { DEFAULT_MEAT_ICON_ID, MeatBadge } from "@/lib/icons/meat-icons";
@@ -42,12 +44,26 @@ interface StockAlert {
   autoPurchaseOrder: boolean;
 }
 
+interface Location {
+  id: string;
+  name: string;
+  status: "ACTIVE" | "INACTIVE";
+}
+
+interface StockByLocation {
+  productId: string;
+  locationId: string;
+  quantity: string;
+}
+
 export default function InventarioPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
-  const [locations, setLocations] = useState<{ id: string; name: string }[]>([]);
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [stockByLocation, setStockByLocation] = useState<StockByLocation[]>([]);
   const [alerts, setAlerts] = useState<StockAlert[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedLocationId, setSelectedLocationId] = useState("ALL");
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [productError, setProductError] = useState<string | null>(null);
@@ -69,6 +85,13 @@ export default function InventarioPage() {
   // Modales
   const [isMermaModalOpen, setIsMermaModalOpen] = useState(false);
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [transferPicker, setTransferPicker] = useState<"product" | "origin" | "destination" | null>(null);
+  const [transferPickerSearch, setTransferPickerSearch] = useState("");
+  const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
+  const [editingLocationId, setEditingLocationId] = useState<string | null>(null);
+  const [locationDraft, setLocationDraft] = useState("");
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [isSavingLocation, setIsSavingLocation] = useState(false);
   const [iconAssignProduct, setIconAssignProduct] = useState<Product | null>(null);
   const [isSavingIcon, setIsSavingIcon] = useState(false);
 
@@ -93,6 +116,7 @@ export default function InventarioPage() {
         if (data.products) setProducts(data.products);
         if (data.categories) setCategories(data.categories);
         if (data.locations) setLocations(data.locations);
+        if (data.stockByLocation) setStockByLocation(data.stockByLocation);
         if (data.alerts) setAlerts(data.alerts);
       })
       .catch(() => {});
@@ -240,6 +264,13 @@ export default function InventarioPage() {
         setActionError("La ubicación origen y destino no pueden ser la misma");
         return;
       }
+      const availableStock = Number(
+        stockByLocation.find((stock) => stock.productId === transferProduct && stock.locationId === fromLoc)?.quantity || "0",
+      );
+      if (Number(transferQty) > availableStock) {
+        setActionError(`La cantidad supera las existencias disponibles en el origen (${availableStock} ${products.find((product) => product.id === transferProduct)?.unit || ""}).`);
+        return;
+      }
 
       const res = await fetch("/api/inventory/movements", {
         method: "POST",
@@ -275,6 +306,88 @@ export default function InventarioPage() {
       p.code.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const stockByLocationMap = new Map(
+    stockByLocation.map((stock) => [`${stock.productId}:${stock.locationId}`, stock.quantity]),
+  );
+  const getLocationStock = (productId: string, locationId: string) =>
+    stockByLocationMap.get(`${productId}:${locationId}`) || "0.000";
+  const activeLocations = locations.filter((location) => location.status === "ACTIVE");
+  const visibleProducts = filteredProducts.filter(
+    (product) =>
+      selectedLocationId === "ALL" || Number(getLocationStock(product.id, selectedLocationId)) > 0,
+  );
+
+  const openTransferModal = () => {
+    const active = locations.filter((location) => location.status === "ACTIVE");
+    const origin = active.find((location) => location.id === fromLoc) || active[0];
+    const destination =
+      active.find((location) => location.id === toLoc && location.id !== origin?.id) ||
+      active.find((location) => location.id !== origin?.id);
+
+    setFromLoc(origin?.id || "");
+    setToLoc(destination?.id || "");
+    setTransferProduct("");
+    setTransferQty("");
+    setActionError(null);
+    setIsTransferModalOpen(true);
+  };
+
+  const openTransferPicker = (picker: "product" | "origin" | "destination") => {
+    setTransferPickerSearch("");
+    setTransferPicker(picker);
+  };
+
+  const handleSaveLocation = async () => {
+    const name = locationDraft.trim();
+    if (!name) {
+      setLocationError("El nombre de la ubicación es obligatorio.");
+      return;
+    }
+
+    try {
+      setIsSavingLocation(true);
+      setLocationError(null);
+      const editingLocation = locations.find((location) => location.id === editingLocationId);
+      const response = await fetch("/api/inventory/locations", {
+        method: editingLocation ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          editingLocation
+            ? { id: editingLocation.id, name, status: editingLocation.status }
+            : { name },
+        ),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "No se pudo guardar la ubicación.");
+
+      setEditingLocationId(null);
+      setLocationDraft("");
+      fetchInventory();
+    } catch (error) {
+      setLocationError(error instanceof Error ? error.message : "No se pudo guardar la ubicación.");
+    } finally {
+      setIsSavingLocation(false);
+    }
+  };
+
+  const handleLocationStatusChange = async (location: Location) => {
+    const status = location.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    try {
+      setLocationError(null);
+      const response = await fetch("/api/inventory/locations", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: location.id, name: location.name, status }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "No se pudo actualizar la ubicación.");
+      if (selectedLocationId === location.id && status === "INACTIVE") setSelectedLocationId("ALL");
+      fetchInventory();
+    } catch (error) {
+      setLocationError(error instanceof Error ? error.message : "No se pudo actualizar la ubicación.");
+    }
+  };
+
   // Valor total del inventario en costo
   const totalValuation = products.reduce((acc, p) => {
     return acc + parseFloat(p.currentStock || "0") * parseFloat(p.cost || "0");
@@ -307,14 +420,22 @@ export default function InventarioPage() {
             Nuevo producto
           </button>
           <button
-            onClick={() => {
-              setActionError(null);
-              setIsTransferModalOpen(true);
-            }}
+            onClick={openTransferModal}
             className="px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all flex items-center gap-1.5"
           >
             <ArrowRightLeft className="w-4 h-4 text-emerald-600" />
             Traslado de Ubicación
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setLocationError(null);
+              setIsLocationModalOpen(true);
+            }}
+            className="px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all flex items-center gap-1.5"
+          >
+            <MapPin className="w-4 h-4 text-sky-700" />
+            Gestionar ubicaciones
           </button>
           <button
             onClick={() => {
@@ -409,6 +530,46 @@ export default function InventarioPage() {
 
       {/* Tabla de Productos y Stock Actual */}
       <div className="bg-white rounded-3xl p-6 shadow-xs border border-slate-200/80 space-y-4">
+        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          <button
+            type="button"
+            onClick={() => setSelectedLocationId("ALL")}
+            className={`shrink-0 rounded-xl border px-3 py-2 text-left transition-all ${
+              selectedLocationId === "ALL"
+                ? "border-slate-900 bg-slate-900 text-white"
+                : "border-slate-200 bg-slate-50 text-slate-700 hover:bg-white"
+            }`}
+          >
+            <span className="block text-xs font-extrabold">Todas las ubicaciones</span>
+            <span className={`block text-[10px] ${selectedLocationId === "ALL" ? "text-slate-300" : "text-slate-500"}`}>
+              {products.length} productos
+            </span>
+          </button>
+          {activeLocations.map((location) => {
+            const productsInLocation = products.filter(
+              (product) => Number(getLocationStock(product.id, location.id)) > 0,
+            ).length;
+            const isSelected = selectedLocationId === location.id;
+            return (
+              <button
+                key={location.id}
+                type="button"
+                onClick={() => setSelectedLocationId(location.id)}
+                className={`shrink-0 rounded-xl border px-3 py-2 text-left transition-all ${
+                  isSelected
+                    ? "border-emerald-700 bg-emerald-700 text-white"
+                    : "border-slate-200 bg-slate-50 text-slate-700 hover:border-emerald-200 hover:bg-white"
+                }`}
+              >
+                <span className="block max-w-48 truncate text-xs font-extrabold">{location.name}</span>
+                <span className={`block text-[10px] ${isSelected ? "text-emerald-100" : "text-slate-500"}`}>
+                  {productsInLocation} productos con stock
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="relative flex-1 max-w-sm">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -420,7 +581,7 @@ export default function InventarioPage() {
               className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium outline-none focus:ring-2 focus:ring-emerald-500"
             />
           </div>
-          <span className="text-xs text-slate-500 font-semibold">{filteredProducts.length} productos listados</span>
+          <span className="text-xs text-slate-500 font-semibold">{visibleProducts.length} productos listados</span>
         </div>
 
         <div className="overflow-x-auto">
@@ -433,13 +594,34 @@ export default function InventarioPage() {
                 <th className="py-2.5 px-3">Precio Venta</th>
                 <th className="py-2.5 px-3">Mínimo</th>
                 <th className="py-2.5 px-3">Objetivo</th>
-                <th className="py-2.5 px-3 text-right">Stock Actual</th>
+                <th className="py-2.5 px-3 text-right">
+                  Stock {selectedLocationId === "ALL"
+                    ? "Total"
+                    : locations.find((location) => location.id === selectedLocationId)?.name}
+                </th>
                 <th className="py-2.5 px-3 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredProducts.map((p) => {
-                const isLow = parseFloat(p.currentStock) <= parseFloat(p.minStock);
+              {visibleProducts.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-3 py-12 text-center">
+                    <p className="text-sm font-bold text-slate-700">
+                      {selectedLocationId === "ALL"
+                        ? "No se encontraron productos."
+                        : "No hay productos con existencias en esta ubicación."}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Prueba otro filtro o revisa las ubicaciones activas.
+                    </p>
+                  </td>
+                </tr>
+              )}
+              {visibleProducts.map((p) => {
+                const currentStock = selectedLocationId === "ALL"
+                  ? p.currentStock
+                  : getLocationStock(p.id, selectedLocationId);
+                const isLow = parseFloat(currentStock) <= parseFloat(p.minStock);
                 return (
                   <tr key={p.id} className="hover:bg-slate-50/50">
                     <td className="py-2.5 px-3 font-mono font-bold text-slate-400">{p.code}</td>
@@ -467,7 +649,7 @@ export default function InventarioPage() {
                       <span className={`px-2 py-0.5 rounded-md font-mono font-bold text-xs ${
                         isLow ? "bg-rose-50 text-rose-700 border border-rose-200" : "bg-emerald-50 text-emerald-800"
                       }`}>
-                        {p.currentStock} {p.unit}
+                        {currentStock} {p.unit}
                       </span>
                     </td>
                     <td className="py-2.5 px-3 text-right">
@@ -584,6 +766,153 @@ export default function InventarioPage() {
         </div>
       )}
 
+      {isLocationModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/40 p-3 backdrop-blur-sm">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="location-modal-title"
+            className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/80 bg-white shadow-2xl"
+          >
+            <header className="flex items-start justify-between gap-4 border-b border-slate-200/70 bg-slate-50/80 p-5 sm:p-6">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700">Inventario</span>
+                <h2 id="location-modal-title" className="mt-1 text-xl font-black text-slate-900">Gestionar ubicaciones</h2>
+                <p className="mt-1 text-xs text-slate-500">Organiza las cámaras, congeladores y mostradores del inventario.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsLocationModalOpen(false);
+                  setEditingLocationId(null);
+                  setLocationDraft("");
+                }}
+                aria-label="Cerrar gestión de ubicaciones"
+                className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-700"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </header>
+
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-6">
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4">
+                <label htmlFor="location-name" className="mb-2 block text-xs font-extrabold text-slate-700">
+                  {editingLocationId ? "Editar nombre de ubicación" : "Agregar ubicación"}
+                </label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    id="location-name"
+                    value={locationDraft}
+                    onChange={(event) => setLocationDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") handleSaveLocation();
+                    }}
+                    placeholder="Ej. Cámara fría secundaria"
+                    className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                  />
+                  <div className="flex gap-2">
+                    {editingLocationId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingLocationId(null);
+                          setLocationDraft("");
+                          setLocationError(null);
+                        }}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                      >
+                        Cancelar
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleSaveLocation}
+                      disabled={isSavingLocation}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-700 px-4 py-2 text-xs font-extrabold text-white transition hover:bg-emerald-800 disabled:opacity-50"
+                    >
+                      {editingLocationId ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                      {isSavingLocation ? "Guardando..." : editingLocationId ? "Guardar" : "Agregar"}
+                    </button>
+                  </div>
+                </div>
+                {locationError && (
+                  <p role="alert" className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                    {locationError}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-black uppercase tracking-wide text-slate-500">Ubicaciones registradas</h3>
+                  <span className="text-[11px] font-semibold text-slate-400">{locations.length} en total</span>
+                </div>
+                {locations.map((location) => {
+                  const stockedProductCount = products.filter(
+                    (product) => Number(getLocationStock(product.id, location.id)) !== 0,
+                  ).length;
+                  const canDeactivate = location.status === "INACTIVE" || stockedProductCount === 0;
+
+                  return (
+                    <div
+                      key={location.id}
+                      className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 sm:flex-row sm:items-center"
+                    >
+                      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                        location.status === "ACTIVE" ? "bg-sky-50 text-sky-700" : "bg-slate-100 text-slate-400"
+                      }`}>
+                        <MapPin className="h-5 w-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-extrabold text-slate-900">{location.name}</p>
+                        <p className="mt-0.5 text-[11px] text-slate-500">
+                          {stockedProductCount} productos con existencias
+                          {stockedProductCount > 0 && location.status === "ACTIVE"
+                            ? " · traslada el stock para poder desactivarla"
+                            : ""}
+                        </p>
+                      </div>
+                      <span className={`w-fit rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wide ${
+                        location.status === "ACTIVE" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
+                      }`}>
+                        {location.status === "ACTIVE" ? "Activa" : "Inactiva"}
+                      </span>
+                      <div className="flex gap-2 sm:ml-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingLocationId(location.id);
+                            setLocationDraft(location.name);
+                            setLocationError(null);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-50"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleLocationStatusChange(location)}
+                          disabled={!canDeactivate || isSavingLocation}
+                          title={!canDeactivate ? "Traslada las existencias antes de desactivar esta ubicación" : undefined}
+                          className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {location.status === "ACTIVE" ? "Desactivar" : "Activar"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-[11px] leading-relaxed text-slate-500">
+                Las ubicaciones con existencias no pueden desactivarse. Las inactivas se conservan para respetar el historial de movimientos y no aparecen en los filtros ni en nuevos traslados.
+              </p>
+            </div>
+          </section>
+        </div>
+      )}
+
       {/* MODAL REGISTRAR MERMA */}
       {isMermaModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
@@ -668,96 +997,305 @@ export default function InventarioPage() {
 
       {/* MODAL TRASLADO ENTRE UBICACIONES */}
       {isTransferModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-white rounded-3xl p-6 shadow-2xl border border-slate-200 w-full max-w-md space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center">
-                <ArrowRightLeft className="w-5 h-5" />
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-sm"
+          onClick={() => setIsTransferModalOpen(false)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="transfer-modal-title"
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-lg space-y-5 rounded-3xl border border-white/80 bg-white p-5 shadow-2xl sm:p-6"
+          >
+            <header className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-700">
+                  <ArrowRightLeft className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 id="transfer-modal-title" className="font-extrabold text-slate-900">Traslado de inventario</h3>
+                  <p className="mt-0.5 text-xs text-slate-500">Elige el producto y las ubicaciones.</p>
+                </div>
               </div>
-              <div>
-                <h3 className="font-extrabold text-slate-900 text-base">Traslado entre Ubicaciones</h3>
-                <p className="text-xs text-slate-500">Mover producto de cámara a mostrador</p>
-              </div>
-            </div>
+              <button
+                type="button"
+                onClick={() => setIsTransferModalOpen(false)}
+                aria-label="Cerrar traslado"
+                className="rounded-xl p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </header>
 
             {actionError && (
-              <div className="p-3 bg-rose-50 text-rose-800 border border-rose-200 text-xs rounded-xl font-semibold">
+              <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-800">
                 {actionError}
               </div>
             )}
 
             <div>
-              <label className="text-xs font-bold text-slate-700 block mb-1">Producto</label>
-              <select
-                value={transferProduct}
-                onChange={(e) => setTransferProduct(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium outline-none"
+              <label className="mb-1.5 block text-xs font-bold text-slate-700">Producto</label>
+              <button
+                type="button"
+                onClick={() => openTransferPicker("product")}
+                aria-haspopup="dialog"
+                className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left transition hover:border-emerald-300 hover:bg-white"
               >
-                <option value="">Seleccione producto...</option>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} (Stock: {p.currentStock} {p.unit})
-                  </option>
-                ))}
-              </select>
+                {transferProduct && products.find((product) => product.id === transferProduct) ? (
+                  <>
+                    <MeatBadge
+                      iconId={products.find((product) => product.id === transferProduct)?.iconId}
+                      size="sm"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-extrabold text-slate-900">
+                        {products.find((product) => product.id === transferProduct)?.name}
+                      </span>
+                      <span className="block text-[11px] text-slate-500">
+                        Disponible en origen: {getLocationStock(transferProduct, fromLoc)} {products.find((product) => product.id === transferProduct)?.unit}
+                      </span>
+                    </span>
+                  </>
+                ) : (
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white text-slate-400">
+                    <Package className="h-4 w-4" />
+                  </span>
+                )}
+                {(!transferProduct || !products.find((product) => product.id === transferProduct)) && (
+                  <span className="flex-1 text-xs font-semibold text-slate-500">Buscar producto con existencias</span>
+                )}
+                <span className="text-[11px] font-bold text-emerald-700">Elegir</span>
+              </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">Desde (Origen)</label>
-                <select
-                  value={fromLoc}
-                  onChange={(e) => setFromLoc(e.target.value)}
-                  className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none"
+                <label className="mb-1.5 block text-xs font-bold text-slate-700">Desde · Origen</label>
+                <button
+                  type="button"
+                  onClick={() => openTransferPicker("origin")}
+                  disabled={activeLocations.length < 2}
+                  aria-haspopup="dialog"
+                  className="flex min-h-12 w-full items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-bold text-slate-800 hover:border-emerald-300 disabled:opacity-50"
                 >
-                  {locations.map((loc) => (
-                    <option key={loc.id} value={loc.id}>{loc.name}</option>
-                  ))}
-                </select>
+                  <MapPin className="h-4 w-4 shrink-0 text-emerald-700" />
+                  <span className="flex-1 truncate">{locations.find((location) => location.id === fromLoc)?.name || "Elegir origen"}</span>
+                  <span className="text-[10px] font-extrabold text-emerald-700">Cambiar</span>
+                </button>
               </div>
               <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">Hacia (Destino)</label>
-                <select
-                  value={toLoc}
-                  onChange={(e) => setToLoc(e.target.value)}
-                  className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none"
+                <label className="mb-1.5 block text-xs font-bold text-slate-700">Hacia · Destino</label>
+                <button
+                  type="button"
+                  onClick={() => openTransferPicker("destination")}
+                  disabled={activeLocations.length < 2}
+                  aria-haspopup="dialog"
+                  className="flex min-h-12 w-full items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-bold text-slate-800 hover:border-emerald-300 disabled:opacity-50"
                 >
-                  {locations.map((loc) => (
-                    <option key={loc.id} value={loc.id}>{loc.name}</option>
-                  ))}
-                </select>
+                  <MapPin className="h-4 w-4 shrink-0 text-sky-700" />
+                  <span className="flex-1 truncate">{locations.find((location) => location.id === toLoc)?.name || "Elegir destino"}</span>
+                  <span className="text-[10px] font-extrabold text-emerald-700">Cambiar</span>
+                </button>
               </div>
             </div>
+
+            {activeLocations.length < 2 && (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+                Activa al menos dos ubicaciones para registrar un traslado.
+              </p>
+            )}
 
             <div>
-              <label className="text-xs font-bold text-slate-700 block mb-1">Cantidad a Mover (kg)</label>
+              <label className="mb-1.5 block text-xs font-bold text-slate-700">
+                Cantidad a mover ({products.find((product) => product.id === transferProduct)?.unit || "unidad"})
+              </label>
               <input
                 type="text"
-                placeholder="Ej: 5.000"
+                placeholder="Ej. 5.000"
                 value={transferQty}
                 onChange={(e) => setTransferQty(e.target.value)}
-                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm font-bold text-slate-900 outline-none"
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm font-bold text-slate-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
               />
+              {transferProduct && (
+                <p className="mt-1.5 text-[11px] text-slate-500">
+                  Stock disponible en {locations.find((location) => location.id === fromLoc)?.name || "el origen"}:{" "}
+                  <span className="font-mono font-bold text-slate-700">
+                    {getLocationStock(transferProduct, fromLoc)} {products.find((product) => product.id === transferProduct)?.unit}
+                  </span>
+                </p>
+              )}
             </div>
 
-            <div className="flex gap-2 pt-2">
+            <div className="flex gap-2 border-t border-slate-100 pt-4">
               <button
                 type="button"
                 onClick={() => setIsTransferModalOpen(false)}
-                className="flex-1 py-3 border border-slate-200 rounded-xl text-xs font-bold text-slate-700"
+                className="flex-1 rounded-xl border border-slate-200 py-3 text-xs font-bold text-slate-700 hover:bg-slate-50"
               >
                 Cancelar
               </button>
               <button
                 type="button"
                 onClick={handleSaveTransfer}
-                disabled={isSubmitting}
-                className="flex-1 py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-extrabold shadow-md"
+                disabled={isSubmitting || !transferProduct || activeLocations.length < 2}
+                className="flex-1 rounded-xl bg-emerald-700 py-3 text-xs font-extrabold text-white shadow-md transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isSubmitting ? "Moviendo..." : "Confirmar Traslado"}
               </button>
             </div>
-          </div>
+          </section>
+        </div>
+      )}
+
+      {transferPicker && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-sm"
+          onClick={() => setTransferPicker(null)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="transfer-picker-title"
+            onClick={(event) => event.stopPropagation()}
+            className="flex max-h-[82vh] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-white/80 bg-white shadow-2xl"
+          >
+            <header className="flex items-start justify-between gap-4 border-b border-slate-200/70 bg-slate-50/80 p-5">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700">Traslado</span>
+                <h3 id="transfer-picker-title" className="mt-1 text-lg font-black text-slate-900">
+                  {transferPicker === "product"
+                    ? "Seleccionar producto"
+                    : transferPicker === "origin"
+                    ? "Seleccionar origen"
+                    : "Seleccionar destino"}
+                </h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  {transferPicker === "product"
+                    ? `Productos con existencias en ${locations.find((location) => location.id === fromLoc)?.name || "el origen"}`
+                    : "Elige una ubicación activa para este movimiento."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTransferPicker(null)}
+                aria-label="Cerrar lista"
+                className="rounded-xl p-2 text-slate-400 hover:bg-slate-200/70 hover:text-slate-700"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </header>
+
+            <div className="relative border-b border-slate-100 p-4">
+              <Search className="absolute left-7 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                autoFocus
+                type="search"
+                value={transferPickerSearch}
+                onChange={(event) => setTransferPickerSearch(event.target.value)}
+                placeholder={transferPicker === "product" ? "Buscar producto..." : "Buscar ubicación..."}
+                aria-label={transferPicker === "product" ? "Buscar productos" : "Buscar ubicaciones"}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+              />
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
+              {transferPicker === "product" ? (
+                products
+                  .filter((product) => {
+                    const query = transferPickerSearch.trim().toLowerCase();
+                    const matchesSearch =
+                      product.name.toLowerCase().includes(query) || product.code.toLowerCase().includes(query);
+                    return matchesSearch && Number(getLocationStock(product.id, fromLoc)) > 0;
+                  })
+                  .map((product) => (
+                    <button
+                      key={product.id}
+                      type="button"
+                      onClick={() => {
+                        setTransferProduct(product.id);
+                        setTransferQty("");
+                        setActionError(null);
+                        setTransferPicker(null);
+                      }}
+                      className={`flex w-full items-center gap-3 rounded-2xl border p-3 text-left transition ${
+                        transferProduct === product.id
+                          ? "border-emerald-300 bg-emerald-50"
+                          : "border-slate-200 bg-white hover:border-emerald-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      <MeatBadge iconId={product.iconId} size="sm" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs font-extrabold text-slate-900">{product.name}</span>
+                        <span className="text-[10px] font-bold text-slate-400">{product.code}</span>
+                      </span>
+                      <span className="text-right">
+                        <span className="block text-[10px] uppercase tracking-wide text-slate-400">Disponible</span>
+                        <span className="block font-mono text-xs font-bold text-emerald-700">
+                          {getLocationStock(product.id, fromLoc)} {product.unit}
+                        </span>
+                      </span>
+                    </button>
+                  ))
+              ) : (
+                activeLocations
+                  .filter((location) => {
+                    const query = transferPickerSearch.trim().toLowerCase();
+                    const allowed =
+                      transferPicker === "origin"
+                        ? location.id !== toLoc
+                        : location.id !== fromLoc;
+                    return allowed && location.name.toLowerCase().includes(query);
+                  })
+                  .map((location) => (
+                    <button
+                      key={location.id}
+                      type="button"
+                      onClick={() => {
+                        if (transferPicker === "origin") {
+                          setFromLoc(location.id);
+                          if (transferProduct && Number(getLocationStock(transferProduct, location.id)) <= 0) {
+                            setTransferProduct("");
+                            setTransferQty("");
+                          }
+                        } else {
+                          setToLoc(location.id);
+                        }
+                        setActionError(null);
+                        setTransferPicker(null);
+                      }}
+                      className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-emerald-200 hover:bg-slate-50"
+                    >
+                      <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-700">
+                        <MapPin className="h-5 w-5" />
+                      </span>
+                      <span className="flex-1 truncate text-sm font-bold text-slate-800">{location.name}</span>
+                      <span className="text-[10px] font-black uppercase tracking-wide text-emerald-700">
+                        {location.id === fromLoc ? "Origen actual" : location.id === toLoc ? "Destino actual" : "Elegir"}
+                      </span>
+                    </button>
+                  ))
+              )}
+
+              {transferPicker === "product" &&
+                products.filter(
+                  (product) =>
+                    Number(getLocationStock(product.id, fromLoc)) > 0 &&
+                    (product.name.toLowerCase().includes(transferPickerSearch.trim().toLowerCase()) ||
+                      product.code.toLowerCase().includes(transferPickerSearch.trim().toLowerCase())),
+                ).length === 0 && (
+                  <p className="py-8 text-center text-sm font-semibold text-slate-500">
+                    No hay productos con existencias que coincidan en esta ubicación.
+                  </p>
+                )}
+              {transferPicker !== "product" &&
+                activeLocations.filter((location) => location.id !== (transferPicker === "origin" ? toLoc : fromLoc)).length === 0 && (
+                  <p className="py-8 text-center text-sm font-semibold text-slate-500">
+                    No hay otra ubicación activa disponible para este traslado.
+                  </p>
+                )}
+            </div>
+          </section>
         </div>
       )}
     </div>

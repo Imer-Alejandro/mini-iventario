@@ -19,68 +19,53 @@ export interface CreateAuditLogParams {
  * Registra cada operación sensible conforme a la sección 16 del documento técnico.
  */
 export async function recordAudit(params: CreateAuditLogParams): Promise<AuditLogData> {
-  // En entorno con base de datos activa se persiste en Prisma
-  if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("localhost:26257") && process.env.NODE_ENV !== "test") {
-    try {
-      const record = await prisma.auditLog.create({
-        data: {
-          userId: params.userId,
-          action: params.action,
-          entity: params.entity,
-          entityId: params.entityId,
-          beforeState: params.beforeState ?? undefined,
-          afterState: params.afterState ?? undefined,
-          ipAddress: params.ipAddress ?? undefined,
-          clientOpId: params.clientOpId ?? undefined,
-          authorizedBy: params.authorizedBy ?? undefined,
-        },
-      });
-
-      const mapped: AuditLogData = {
-        id: record.id,
-        userId: record.userId,
-        action: record.action,
-        entity: record.entity,
-        entityId: record.entityId ?? undefined,
-        beforeState: record.beforeState,
-        afterState: record.afterState,
-        ipAddress: record.ipAddress ?? undefined,
-        clientOpId: record.clientOpId ?? undefined,
-        authorizedBy: record.authorizedBy ?? undefined,
-        createdAt: record.createdAt,
-      };
-      store.recordAuditLog(mapped);
-      return mapped;
-    } catch {
-      // fallback a store
-    }
+  if (process.env.NODE_ENV === "test") {
+    return store.recordAuditLog({
+      userId: params.userId,
+      action: params.action,
+      entity: params.entity,
+      entityId: params.entityId,
+      beforeState: params.beforeState,
+      afterState: params.afterState,
+      ipAddress: params.ipAddress,
+      clientOpId: params.clientOpId,
+      authorizedBy: params.authorizedBy,
+    });
   }
 
-  // Fallback seguro a store en memoria
-  return store.recordAuditLog({
-    userId: params.userId,
-    action: params.action,
-    entity: params.entity,
-    entityId: params.entityId,
-    beforeState: params.beforeState,
-    afterState: params.afterState,
-    ipAddress: params.ipAddress,
-    clientOpId: params.clientOpId,
-    authorizedBy: params.authorizedBy,
+  const record = await prisma.auditLog.create({
+    data: {
+      userId: params.userId,
+      action: params.action,
+      entity: params.entity,
+      entityId: params.entityId,
+      beforeState: params.beforeState ?? undefined,
+      afterState: params.afterState ?? undefined,
+      ipAddress: params.ipAddress ?? undefined,
+      clientOpId: params.clientOpId ?? undefined,
+      authorizedBy: params.authorizedBy ?? undefined,
+    },
   });
+
+  return {
+    ...record,
+    entityId: record.entityId ?? undefined,
+    clientOpId: record.clientOpId ?? undefined,
+    authorizedBy: record.authorizedBy ?? undefined,
+    ipAddress: record.ipAddress ?? undefined,
+  };
 }
 
 
 export async function getAuditLogs(entity?: string) {
-  try {
-    const logs = await prisma.auditLog.findMany({
+  if (process.env.NODE_ENV === "test") {
+    const logs = store.getAuditLogs();
+    return entity ? logs.filter((log) => log.entity === entity) : logs;
+  }
+
+  return prisma.auditLog.findMany({
       where: entity ? { entity } : undefined,
       orderBy: { createdAt: "desc" },
       take: 100,
     });
-    return logs;
-  } catch {
-    const logs = store.getAuditLogs();
-    return entity ? logs.filter((l) => l.entity === entity) : logs;
-  }
 }

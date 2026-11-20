@@ -3,6 +3,7 @@ import { openCashSession, recordCashMovement, closeCashSession, getCashSessionRe
 import { createSale, voidSale } from "../sales.service";
 import { checkCustomerCredit, registerCustomerPayment, getCustomerAging } from "../credit.service";
 import { recordInventoryMovement, recordMerma, getStockAlerts } from "../inventory.service";
+import { POST as createLocation, PUT as updateLocation } from "@/app/api/inventory/locations/route";
 import Decimal from "decimal.js";
 
 async function runDomainServiceTests() {
@@ -229,6 +230,66 @@ async function runDomainServiceTests() {
   assert("Caja cerrada exitosamente en estado CLOSED", finalClosed.status === "CLOSED");
   assert("Diferencia de faltante calculada exactamente: '-50.00'", finalClosed.difference === "-50.00", `Diferencia: ${finalClosed.difference}`);
   assert("Reporte inmutable con justificación auditada", Boolean(finalClosed.diffReason?.includes("Error en cambio")));
+
+  // -------------------------------------------------------------
+  // TEST 9: Gestión segura de ubicaciones
+  // -------------------------------------------------------------
+  console.log("\n[GRUPO 9: GESTIÓN DE UBICACIONES]");
+  store.reset();
+  const createLocationRequest = (name: string) =>
+    new Request("http://localhost/api/inventory/locations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+  const updateLocationRequest = (body: { id: string; name: string; status: "ACTIVE" | "INACTIVE" }) =>
+    new Request("http://localhost/api/inventory/locations", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  const createdLocationResponse = await createLocation(createLocationRequest("Depósito auxiliar"));
+  const createdLocation = await createdLocationResponse.json();
+  assert("Crea una ubicación activa", createdLocationResponse.status === 201 && createdLocation.status === "ACTIVE");
+
+  const duplicateLocationResponse = await createLocation(createLocationRequest("depósito auxiliar"));
+  assert("Evita nombres de ubicación duplicados ignorando mayúsculas", duplicateLocationResponse.status === 409);
+
+  const renameLocationResponse = await updateLocation(
+    updateLocationRequest({ id: createdLocation.id, name: "Depósito trasero", status: "ACTIVE" }),
+  );
+  assert("Permite renombrar una ubicación", renameLocationResponse.status === 200);
+
+  const stockedLocationResponse = await updateLocation(
+    updateLocationRequest({ id: "loc-001", name: "Cámara Fría Principal", status: "INACTIVE" }),
+  );
+  assert("Impide desactivar una ubicación con existencias", stockedLocationResponse.status === 409);
+
+  const salesLocationResponse = await updateLocation(
+    updateLocationRequest({ id: "loc-003", name: "Exhibición / Mostrador", status: "INACTIVE" }),
+  );
+  assert("Mantiene activa la ubicación predeterminada de ventas", salesLocationResponse.status === 409);
+
+  const deactivateEmptyLocationResponse = await updateLocation(
+    updateLocationRequest({ id: createdLocation.id, name: "Depósito trasero", status: "INACTIVE" }),
+  );
+  assert("Permite desactivar una ubicación vacía", deactivateEmptyLocationResponse.status === 200);
+
+  let inactiveTransferRejected = false;
+  try {
+    await recordInventoryMovement({
+      productId: "prod-res-01",
+      fromLocationId: "loc-001",
+      toLocationId: createdLocation.id,
+      type: "TRASLADO",
+      quantity: "1.000",
+      userId: "user-cajero-1",
+    });
+  } catch {
+    inactiveTransferRejected = true;
+  }
+  assert("Rechaza traslados hacia ubicaciones inactivas", inactiveTransferRejected);
 
 
   console.log("\n=================================================================");

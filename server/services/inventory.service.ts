@@ -1,7 +1,9 @@
 import Decimal from "decimal.js";
-import { store, InventoryMovementData, ProductData } from "./data-store";
+import { store, InventoryMovementData } from "./data-store";
 import { validateAndParseQty } from "@/lib/money";
 import { recordAudit } from "./audit.service";
+import { prisma } from "@/lib/db";
+import { Prisma, type InventoryMovement } from "@prisma/client";
 
 export interface RecordMovementParams {
   productId: string;
@@ -21,6 +23,7 @@ export interface RecordMovementParams {
 
 export interface MermaParams {
   productId: string;
+  clientOpId?: string;
   locationId: string;
   quantity: string;
   reason: string; // e.g., "Desposte / Hueso", "Exceso de grasa", "Deshidratación cámara fría", "Caducidad"
@@ -39,13 +42,205 @@ export interface StockAlertResult {
   autoPurchaseOrder: boolean;
 }
 
+async function recordPersistedInventoryMovement(
+  params: RecordMovementParams,
+): Promise<InventoryMovementData> {
+  const qtyDec = validateAndParseQty(params.quantity, true);
+  if (qtyDec.isZero() || qtyDec.isNegative()) {
+    throw new Error("La cantidad del movimiento debe ser un valor positivo mayor a cero");
+  }
+
+  const mapMovement = (movement: InventoryMovement): InventoryMovementData => ({
+    ...movement,
+    type: movement.type as InventoryMovementData["type"],
+    quantity: movement.quantity.toFixed(3),
+    unitCost: movement.unitCost?.toFixed(4),
+    referenceType: movement.referenceType ?? undefined,
+    fromLocationId: movement.fromLocationId ?? undefined,
+    toLocationId: movement.toLocationId ?? undefined,
+    referenceId: movement.referenceId ?? undefined,
+    reason: movement.reason ?? undefined,
+    clientOpId: movement.clientOpId ?? undefined,
+    authorizedBy: movement.authorizedBy ?? undefined,
+  });
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+    if (params.clientOpId) {
+      const existing = await tx.inventoryMovement.findUnique({
+        where: { clientOpId: params.clientOpId },
+      });
+      if (existing) return mapMovement(existing);
+    }
+
+    const product = await tx.product.findUnique({ where: { id: params.productId } });
+    if (!product) throw new Error(`Producto no encontrado: ${params.productId}`);
+
+    const quantity = validateAndParseQty(params.quantity, product.allowsDecimals);
+    if (quantity.isZero() || quantity.isNegative()) {
+      throw new Error("La cantidad del movimiento debe ser un valor positivo mayor a cero");
+    }
+
+    if (params.type === "TRASLADO") {
+      for (const locationId of [params.fromLocationId, params.toLocationId]) {
+        if (!locationId) continue;
+        const location = await tx.location.findUnique({ where: { id: locationId } });
+        if (!location) throw new Error(`Ubicación no encontrada: ${locationId}`);
+        if (location.status !== "ACTIVE") throw new Error(`La ubicación ${location.name} está inactiva`);
+      }
+    }
+
+    const currentTotal = new Decimal(product.currentStock.toString());
+    let newTotal: Decimal;
+
+    switch (params.type) {
+      case "ENTRADA":
+      case "DEVOLUCION": {
+        newTotal = currentTotal.plus(quantity);
+        if (params.toLocationId) {
+          const current = await tx.stockByLocation.findUnique({
+            where: { productId_locationId: { productId: product.id, locationId: params.toLocationId } },
+          });
+          await tx.stockByLocation.upsert({
+            where: { productId_locationId: { productId: product.id, locationId: params.toLocationId } },
+            create: { productId: product.id, locationId: params.toLocationId, quantity: quantity.toFixed(3) },
+            update: { quantity: new Decimal(current?.quantity.toString() ?? "0").plus(quantity).toFixed(3) },
+          });
+        }
+        break;
+      }
+      case "SALIDA":
+      case "MERMA": {
+        newTotal = currentTotal.minus(quantity);
+        if (newTotal.isNegative() && !params.allowNegativeStock) {
+          throw new Error(`Stock insuficiente para ${product.name}. Stock actual: ${product.currentStock} ${product.unit}, solicitado: ${params.quantity} ${product.unit}`);
+        }
+        if (params.fromLocationId) {
+          const current = await tx.stockByLocation.findUnique({
+            where: { productId_locationId: { productId: product.id, locationId: params.fromLocationId } },
+          });
+          const currentQuantity = new Decimal(current?.quantity.toString() ?? "0");
+          if (currentQuantity.minus(quantity).isNegative() && !params.allowNegativeStock) {
+            throw new Error("Stock insuficiente en la ubicación de origen");
+          }
+          await tx.stockByLocation.upsert({
+            where: { productId_locationId: { productId: product.id, locationId: params.fromLocationId } },
+            create: { productId: product.id, locationId: params.fromLocationId, quantity: quantity.negated().toFixed(3) },
+            update: { quantity: currentQuantity.minus(quantity).toFixed(3) },
+          });
+        }
+        break;
+      }
+      case "TRASLADO": {
+        if (!params.fromLocationId || !params.toLocationId) {
+          throw new Error("Un traslado requiere ubicación de origen y destino");
+        }
+        if (params.fromLocationId === params.toLocationId) {
+          throw new Error("La ubicación de origen y destino no pueden ser la misma");
+        }
+        const [from, to] = await Promise.all([
+          tx.stockByLocation.findUnique({
+            where: { productId_locationId: { productId: product.id, locationId: params.fromLocationId } },
+          }),
+          tx.stockByLocation.findUnique({
+            where: { productId_locationId: { productId: product.id, locationId: params.toLocationId } },
+          }),
+        ]);
+        const fromQuantity = new Decimal(from?.quantity.toString() ?? "0");
+        const toQuantity = new Decimal(to?.quantity.toString() ?? "0");
+        if (fromQuantity.minus(quantity).isNegative() && !params.allowNegativeStock) {
+          throw new Error("Stock insuficiente en la ubicación de origen");
+        }
+        await tx.stockByLocation.upsert({
+          where: { productId_locationId: { productId: product.id, locationId: params.fromLocationId } },
+          create: { productId: product.id, locationId: params.fromLocationId, quantity: quantity.negated().toFixed(3) },
+          update: { quantity: fromQuantity.minus(quantity).toFixed(3) },
+        });
+        await tx.stockByLocation.upsert({
+          where: { productId_locationId: { productId: product.id, locationId: params.toLocationId } },
+          create: { productId: product.id, locationId: params.toLocationId, quantity: quantity.toFixed(3) },
+          update: { quantity: toQuantity.plus(quantity).toFixed(3) },
+        });
+        newTotal = currentTotal;
+        break;
+      }
+      case "AJUSTE":
+        if (!params.reason?.trim()) throw new Error("Los ajustes de inventario exigen un motivo obligatorio");
+        newTotal = quantity;
+        break;
+      default:
+        throw new Error(`Tipo de movimiento no soportado: ${params.type}`);
+    }
+
+    await tx.product.update({
+      where: { id: product.id },
+      data: { currentStock: newTotal.toFixed(3) },
+    });
+
+    const movement = await tx.inventoryMovement.create({
+      data: {
+        productId: product.id,
+        fromLocationId: params.fromLocationId,
+        toLocationId: params.toLocationId,
+        type: params.type,
+        quantity: quantity.toFixed(3),
+        unitCost: params.unitCost,
+        referenceType: params.referenceType,
+        referenceId: params.referenceId,
+        reason: params.reason,
+        clientOpId: params.clientOpId,
+        userId: params.userId,
+        authorizedBy: params.authorizedBy,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        userId: params.userId,
+        action: "INVENTORY_MOVEMENT",
+        entity: "INVENTORY",
+        entityId: product.id,
+        afterState: { type: params.type, qty: params.quantity, newTotal: newTotal.toFixed(3) },
+        clientOpId: params.clientOpId,
+        authorizedBy: params.authorizedBy,
+      },
+    });
+
+    return mapMovement(movement);
+    });
+  } catch (error) {
+    if (params.clientOpId && error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const existing = await prisma.inventoryMovement.findUnique({
+        where: { clientOpId: params.clientOpId },
+      });
+      if (existing) return mapMovement(existing);
+    }
+    throw error;
+  }
+}
+
 /**
  * Registra un movimiento de inventario garantizando trazabilidad y actualización de stock
  */
 export async function recordInventoryMovement(params: RecordMovementParams): Promise<InventoryMovementData> {
+  if (process.env.NODE_ENV !== "test") return recordPersistedInventoryMovement(params);
+
   const product = store.getProductById(params.productId);
   if (!product) {
     throw new Error(`Producto no encontrado: ${params.productId}`);
+  }
+
+  if (params.type === "TRASLADO") {
+    for (const locationId of [params.fromLocationId, params.toLocationId]) {
+      if (!locationId) continue;
+      const location = store.getLocationById(locationId);
+      if (!location) {
+        throw new Error(`Ubicación no encontrada: ${locationId}`);
+      }
+      if (location.status !== "ACTIVE") {
+        throw new Error(`La ubicación ${location.name} está inactiva`);
+      }
+    }
   }
 
   // Validar cantidad decimal según las reglas del producto
@@ -164,6 +359,7 @@ export async function recordMerma(params: MermaParams): Promise<InventoryMovemen
 
   return recordInventoryMovement({
     productId: params.productId,
+    clientOpId: params.clientOpId,
     fromLocationId: params.locationId,
     type: "MERMA",
     quantity: params.quantity,
@@ -179,7 +375,10 @@ export async function recordMerma(params: MermaParams): Promise<InventoryMovemen
  * Verifica alertas de stock bajo y calcula las cantidades sugeridas de reposición
  */
 export async function getStockAlerts(): Promise<StockAlertResult[]> {
-  const products = store.getProducts();
+  const products =
+    process.env.NODE_ENV === "test"
+      ? store.getProducts()
+      : await prisma.product.findMany();
   const alerts: StockAlertResult[] = [];
 
   for (const p of products) {
@@ -195,9 +394,9 @@ export async function getStockAlerts(): Promise<StockAlertResult[]> {
         productId: p.id,
         productCode: p.code,
         productName: p.name,
-        currentStock: p.currentStock,
-        minStock: p.minStock,
-        targetStock: p.targetStock,
+        currentStock: curStock.toFixed(3),
+        minStock: minStock.toFixed(3),
+        targetStock: targetStock.toFixed(3),
         suggestedQty: suggested.toFixed(3),
         autoPurchaseOrder: p.autoPurchaseOrder,
       });

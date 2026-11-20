@@ -4,6 +4,8 @@ export interface CategoryData {
   createdAt: Date;
 }
 
+export const DEFAULT_SALES_LOCATION_ID = "loc-003";
+
 export interface ProductData {
   id: string;
   code: string;
@@ -149,10 +151,10 @@ export interface AuditLogData {
 }
 
 // Semilla inicial realista para Carnicería dominicana
-function createInitialState() {
+export function createInitialState() {
   const locCamaraFriaId = "loc-001";
   const locCongeladorId = "loc-002";
-  const locMostradorId = "loc-003";
+  const locMostradorId = DEFAULT_SALES_LOCATION_ID;
 
   const locations: LocationData[] = [
     { id: locCamaraFriaId, name: "Cámara Fría Principal", status: "ACTIVE", createdAt: new Date() },
@@ -485,10 +487,35 @@ class InMemDataStore {
     return [...this.data.locations];
   }
 
+  getLocationById(id: string) {
+    return this.data.locations.find((location) => location.id === id);
+  }
+
+  addLocation(name: string): LocationData {
+    const location: LocationData = {
+      id: `loc-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      name,
+      status: "ACTIVE",
+      createdAt: new Date(),
+    };
+    this.data.locations.push(location);
+    return location;
+  }
+
+  updateLocation(id: string, updates: Partial<Pick<LocationData, "name" | "status">>) {
+    const location = this.getLocationById(id);
+    if (location) Object.assign(location, updates);
+    return location;
+  }
+
   getStockByLocation(productId: string, locationId: string) {
     return this.data.stockByLocations.find(
       (s) => s.productId === productId && s.locationId === locationId
     );
+  }
+
+  getStockByLocations() {
+    return [...this.data.stockByLocations];
   }
 
   setStockByLocation(productId: string, locationId: string, quantity: string) {

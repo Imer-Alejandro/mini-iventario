@@ -27,6 +27,7 @@ export async function POST(request: Request) {
       case "CUSTOMER_PAYMENT": {
         result = await registerCustomerPayment({
           ...payload,
+          clientOpId,
         });
         break;
       }
@@ -34,6 +35,7 @@ export async function POST(request: Request) {
       case "CASH_MOVEMENT": {
         result = await recordCashMovement({
           ...payload,
+          clientOpId,
         });
         break;
       }
@@ -41,6 +43,7 @@ export async function POST(request: Request) {
       case "MERMA": {
         result = await recordMerma({
           ...payload,
+          clientOpId,
         });
         break;
       }

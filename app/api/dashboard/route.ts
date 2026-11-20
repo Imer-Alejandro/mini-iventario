@@ -1,13 +1,20 @@
 import { NextResponse } from "next/server";
 import Decimal from "decimal.js";
-import { store } from "@/server/services/data-store";
+import { prisma } from "@/lib/db";
 import { getCashSessionReport } from "@/server/services/cash.service";
 import { getStockAlerts } from "@/server/services/inventory.service";
 
 export async function GET() {
-  const sales = store.getSales();
-  const activeCash = store.getActiveCashSession();
-  const customers = store.getCustomers();
+  const [sales, activeCash, customers, products] = await Promise.all([
+    prisma.sale.findMany({
+      include: { lines: true, customer: { select: { name: true } } },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.cashSession.findFirst({ where: { status: "OPEN" } }),
+    prisma.customer.findMany(),
+    prisma.product.findMany({ include: { category: true } }),
+  ]);
+  const productsById = new Map(products.map((product) => [product.id, product]));
   const alerts = await getStockAlerts();
 
   // 1. Métricas de Ventas
@@ -30,7 +37,7 @@ export async function GET() {
   });
 
   for (const s of todaySales) {
-    const saleTot = new Decimal(s.total);
+    const saleTot = new Decimal(s.total.toString());
     totalSalesDay = totalSalesDay.plus(saleTot);
 
     if (s.paymentType === "CONTADO") {
@@ -40,10 +47,10 @@ export async function GET() {
     }
 
     for (const l of s.lines) {
-      const prod = store.getProductById(l.productId);
+      const prod = productsById.get(l.productId);
       if (prod) {
-        const costDec = new Decimal(prod.cost);
-        const qtyDec = new Decimal(l.quantity);
+        const costDec = new Decimal(prod.cost.toString());
+        const qtyDec = new Decimal(l.quantity.toString());
         totalEstimatedCost = totalEstimatedCost.plus(costDec.mul(qtyDec));
       }
     }
@@ -60,9 +67,9 @@ export async function GET() {
   let debtorsCount = 0;
 
   for (const c of customers) {
-    const bal = new Decimal(c.balance);
+    const bal = new Decimal(c.balance.toString());
     totalDebtOwed = totalDebtOwed.plus(bal);
-    totalCreditLimit = totalCreditLimit.plus(new Decimal(c.creditLimit));
+    totalCreditLimit = totalCreditLimit.plus(new Decimal(c.creditLimit.toString()));
     if (bal.greaterThan(0)) {
       debtorsCount++;
     }
@@ -78,11 +85,11 @@ export async function GET() {
   const categorySalesMap: Record<string, Decimal> = {};
   for (const s of reportSales) {
     for (const line of s.lines) {
-      const prod = store.getProductById(line.productId);
+      const prod = productsById.get(line.productId);
       const catName = prod?.categoryId
-        ? store.getCategories().find((c) => c.id === prod.categoryId)?.name || "Otros"
+        ? prod.category?.name || "Otros"
         : "Otros";
-      categorySalesMap[catName] = (categorySalesMap[catName] || new Decimal(0)).plus(new Decimal(line.lineTotal));
+      categorySalesMap[catName] = (categorySalesMap[catName] || new Decimal(0)).plus(new Decimal(line.lineTotal.toString()));
     }
   }
 
@@ -107,7 +114,7 @@ export async function GET() {
     const saleDate = new Date(sale.createdAt);
     const dateKey = `${saleDate.getFullYear()}-${saleDate.getMonth()}-${saleDate.getDate()}`;
     const current = dailySalesMap.get(dateKey);
-    if (current) dailySalesMap.set(dateKey, current.plus(new Decimal(sale.total)));
+    if (current) dailySalesMap.set(dateKey, current.plus(new Decimal(sale.total.toString())));
   }
   const dailySalesData = dailySales.map((day) => ({
     date: day.date,
@@ -118,17 +125,17 @@ export async function GET() {
   const productSales = new Map<string, { name: string; unit: string; iconId?: string; quantity: Decimal; total: Decimal }>();
   for (const sale of reportSales) {
     for (const line of sale.lines) {
-      const product = store.getProductById(line.productId);
+      const product = productsById.get(line.productId);
       if (!product) continue;
       const current = productSales.get(product.id) || {
         name: product.name,
         unit: product.unit,
-        iconId: product.iconId,
+        iconId: product.iconId ?? undefined,
         quantity: new Decimal(0),
         total: new Decimal(0),
       };
-      current.quantity = current.quantity.plus(new Decimal(line.quantity));
-      current.total = current.total.plus(new Decimal(line.lineTotal));
+      current.quantity = current.quantity.plus(new Decimal(line.quantity.toString()));
+      current.total = current.total.plus(new Decimal(line.lineTotal.toString()));
       productSales.set(product.id, current);
     }
   }
@@ -148,8 +155,8 @@ export async function GET() {
   const recentSales = confirmedSales.slice(0, 10).map((s) => ({
     id: s.id,
     number: s.number,
-    customerName: s.customerName || "Cliente Mostrador",
-    total: s.total,
+    customerName: s.customer?.name || "Cliente Mostrador",
+    total: s.total.toString(),
     paymentType: s.paymentType,
     itemsCount: s.lines.length,
     createdAt: s.createdAt,

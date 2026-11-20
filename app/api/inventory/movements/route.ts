@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
-import { store, type InventoryMovementData } from "@/server/services/data-store";
+import { prisma } from "@/lib/db";
+import type { InventoryMovementData } from "@/server/services/data-store";
 import { recordInventoryMovement, recordMerma } from "@/server/services/inventory.service";
 
 export async function GET() {
-  const movements = store.getInventoryMovements();
-  return NextResponse.json(movements);
+  const movements = await prisma.inventoryMovement.findMany({ orderBy: { createdAt: "desc" } });
+  return NextResponse.json(movements.map((movement) => ({
+    ...movement,
+    quantity: movement.quantity.toFixed(3),
+    unitCost: movement.unitCost?.toFixed(4) ?? null,
+  })));
 }
 
 export async function POST(request: Request) {
@@ -15,6 +20,7 @@ export async function POST(request: Request) {
     if (body.type === "MERMA") {
       result = await recordMerma({
         productId: body.productId,
+        clientOpId: body.clientOpId,
         locationId: body.locationId || "loc-003",
         quantity: body.quantity,
         reason: body.reason,
@@ -24,6 +30,7 @@ export async function POST(request: Request) {
     } else {
       result = await recordInventoryMovement({
         productId: body.productId,
+        clientOpId: body.clientOpId,
         fromLocationId: body.fromLocationId,
         toLocationId: body.toLocationId,
         type: body.type,

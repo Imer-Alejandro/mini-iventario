@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { store } from "@/server/services/data-store";
+import { prisma } from "@/lib/db";
 import {
   openCashSession,
   recordCashMovement,
@@ -12,21 +12,33 @@ export async function GET(request: Request) {
   const sessionId = searchParams.get("sessionId");
 
   const session = sessionId
-    ? store.getCashSessions().find((s) => s.id === sessionId)
-    : store.getActiveCashSession();
+    ? await prisma.cashSession.findUnique({ where: { id: sessionId } })
+    : await prisma.cashSession.findFirst({ where: { status: "OPEN" } });
 
   if (!session) {
     return NextResponse.json({ active: false, session: null });
   }
 
   const report = await getCashSessionReport(session.id);
-  const movements = store.getCashMovements(session.id);
+  const [movements, allSessions] = await Promise.all([
+    prisma.cashMovement.findMany({ where: { cashSessionId: session.id }, orderBy: { createdAt: "desc" } }),
+    prisma.cashSession.findMany({ orderBy: { openedAt: "desc" } }),
+  ]);
 
   return NextResponse.json({
     active: session.status === "OPEN",
     report,
-    movements,
-    allSessions: store.getCashSessions(),
+    movements: movements.map((movement) => ({
+      ...movement,
+      amount: movement.amount.toFixed(2),
+    })),
+    allSessions: allSessions.map((cashSession) => ({
+      ...cashSession,
+      openingAmount: cashSession.openingAmount.toFixed(2),
+      expectedAmount: cashSession.expectedAmount.toFixed(2),
+      countedAmount: cashSession.countedAmount?.toFixed(2) ?? null,
+      difference: cashSession.difference?.toFixed(2) ?? null,
+    })),
   });
 }
 
@@ -47,6 +59,7 @@ export async function POST(request: Request) {
     if (action === "MOVEMENT") {
       const mov = await recordCashMovement({
         cashSessionId: body.cashSessionId,
+        clientOpId: body.clientOpId,
         type: body.type,
         amount: body.amount,
         reason: body.reason,

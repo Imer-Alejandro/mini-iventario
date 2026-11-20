@@ -1,15 +1,27 @@
 import { NextResponse } from "next/server";
 import { registerCustomerPayment } from "@/server/services/credit.service";
-import { store } from "@/server/services/data-store";
+import { prisma } from "@/lib/db";
 
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const ledger = store.getCustomerLedger(id);
-  const customer = store.getCustomerById(id);
-  return NextResponse.json({ customer, ledger });
+  const [ledger, customer] = await Promise.all([
+    prisma.customerLedger.findMany({ where: { customerId: id }, orderBy: { createdAt: "desc" } }),
+    prisma.customer.findUnique({ where: { id } }),
+  ]);
+  return NextResponse.json({
+    customer: customer && {
+      ...customer,
+      creditLimit: customer.creditLimit.toFixed(2),
+      balance: customer.balance.toFixed(2),
+    },
+    ledger: ledger.map((entry) => ({
+      ...entry,
+      amount: entry.amount.toFixed(2),
+    })),
+  });
 }
 
 export async function POST(
@@ -21,6 +33,7 @@ export async function POST(
     const body = await request.json();
     const result = await registerCustomerPayment({
       customerId: id,
+      clientOpId: body.clientOpId,
       amount: body.amount,
       paymentMethod: body.paymentMethod || "EFECTIVO",
       cashSessionId: body.cashSessionId,
