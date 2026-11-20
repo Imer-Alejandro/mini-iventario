@@ -15,6 +15,7 @@ import {
   Clock,
   Keyboard,
   ArrowRight,
+  X,
 } from "lucide-react";
 import { formatCurrencyRD, calculateLineTotal, sumLineTotals } from "@/lib/money";
 import { WeightInputModal } from "@/app/components/WeightInputModal";
@@ -88,11 +89,14 @@ export default function PosVentasPage() {
   const [modalProduct, setModalProduct] = useState<Product | null>(null);
   const [isWeightModalOpen, setIsWeightModalOpen] = useState(false);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState("");
   const [completedSale, setCompletedSale] = useState<CompletedSale | null>(null);
   const [isTicketModalOpen, setIsTicketModalOpen] = useState(false);
 
   // Ref para input de búsqueda y atajos
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const customerSearchRef = useRef<HTMLInputElement>(null);
 
   // Carga inicial de catálogo y clientes
   useEffect(() => {
@@ -116,12 +120,18 @@ export default function PosVentasPage() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // '/' para enfocar el buscador
-      if (e.key === "/" && document.activeElement !== searchInputRef.current) {
+      if (!isCustomerModalOpen && e.key === "/" && document.activeElement !== searchInputRef.current) {
         e.preventDefault();
         searchInputRef.current?.focus();
       }
       // 'F2' para cobrar si el carrito tiene productos
-      if (e.key === "F2" && cart.length > 0 && !isWeightModalOpen && !isTicketModalOpen) {
+      if (
+        e.key === "F2" &&
+        cart.length > 0 &&
+        !isWeightModalOpen &&
+        !isTicketModalOpen &&
+        !isCustomerModalOpen
+      ) {
         e.preventDefault();
         setIsPaymentModalOpen(true);
       }
@@ -134,7 +144,19 @@ export default function PosVentasPage() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [cart.length, isWeightModalOpen, isTicketModalOpen]);
+  }, [cart.length, isWeightModalOpen, isTicketModalOpen, isCustomerModalOpen]);
+
+  useEffect(() => {
+    if (!isCustomerModalOpen) return;
+
+    customerSearchRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsCustomerModalOpen(false);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isCustomerModalOpen]);
 
   // Filtrado de productos por categoría y búsqueda
   const filteredProducts = products.filter((p) => {
@@ -145,6 +167,13 @@ export default function PosVentasPage() {
       p.code.toLowerCase().includes(searchQuery.toLowerCase());
     return matchesCat && matchesSearch;
   });
+
+  const normalizedCustomerSearch = customerSearch.trim().toLowerCase();
+  const filteredCustomers = customers.filter((customer) =>
+    [customer.name, customer.documentId, customer.phone]
+      .filter(Boolean)
+      .some((value) => value!.toLowerCase().includes(normalizedCustomerSearch)),
+  );
 
   // Cálculo de totales del carrito con exactitud decimal ROUND_HALF_UP
   const subtotalAmount = sumLineTotals(cart.map((c) => c.lineTotal));
@@ -538,34 +567,51 @@ export default function PosVentasPage() {
             )}
           </div>
 
-          {/* Selector de Cliente (Estilo Bitepoint) */}
+          {/* Selector de Cliente */}
           <div className="p-3.5 border-t border-slate-200/60 bg-white/60">
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
                 <User className="w-3.5 h-3.5 text-slate-400" />
                 Cliente de la Venta
               </label>
-              {selectedCustomer && (
-                <span className="text-[10px] font-black text-amber-800 bg-amber-100/70 px-2 py-0.2 rounded-full border border-amber-200">
-                  Deuda: {formatCurrencyRD(selectedCustomer.balance)}
-                </span>
-              )}
             </div>
-            <select
-              value={selectedCustomer?.id || ""}
-              onChange={(e) => {
-                const found = customers.find((c) => c.id === e.target.value);
-                setSelectedCustomer(found || null);
+            <button
+              type="button"
+              onClick={() => {
+                setCustomerSearch("");
+                setIsCustomerModalOpen(true);
               }}
-              className="w-full text-xs font-bold py-2.5 px-3 bg-white/90 border border-slate-200/80 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-500/30 text-slate-800 cursor-pointer shadow-xs"
+              aria-haspopup="dialog"
+              aria-expanded={isCustomerModalOpen}
+              className="w-full p-3 bg-white/90 border border-slate-200/80 rounded-2xl text-left shadow-xs hover:bg-white hover:border-emerald-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 transition-all cursor-pointer"
             >
-              <option value="">Cliente Mostrador (Venta Rápida / Contado)</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} — Crédito Disp: {formatCurrencyRD(c.creditLimit)} (Deuda: {formatCurrencyRD(c.balance)})
-                </option>
-              ))}
-            </select>
+              <span className="flex items-center gap-3">
+                <span className={`w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ${
+                  selectedCustomer ? "bg-[#0B192C] text-white" : "bg-slate-100 text-slate-500"
+                }`}>
+                  <User className="w-5 h-5" />
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="block text-xs font-black text-slate-900 truncate">
+                    {selectedCustomer?.name || "Cliente Mostrador"}
+                  </span>
+                  <span className="block text-[11px] text-slate-500 truncate">
+                    {selectedCustomer
+                      ? selectedCustomer.documentId || selectedCustomer.phone || "Cliente registrado"
+                      : "Venta rápida / contado"}
+                  </span>
+                </span>
+                <span className="hidden sm:flex items-center gap-2">
+                  {selectedCustomer && (
+                    <span className="text-[10px] font-black text-amber-800 bg-amber-100/70 px-2 py-1 rounded-full border border-amber-200">
+                      Deuda: {formatCurrencyRD(selectedCustomer.balance)}
+                    </span>
+                  )}
+                  <span className="text-[11px] font-extrabold text-emerald-700">Cambiar</span>
+                  <ArrowRight className="w-4 h-4 text-slate-400" />
+                </span>
+              </span>
+            </button>
           </div>
 
           {/* Desglose Financiero & Botón de Cobro (Olive POS / Bitepoint) */}
@@ -603,6 +649,153 @@ export default function PosVentasPage() {
       </div>
 
       {/* Modales Interactivos de Pesaje, Cobro y Ticket */}
+      {isCustomerModalOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-5 bg-[#0B192C]/50 backdrop-blur-md animate-in fade-in duration-200"
+          onClick={() => setIsCustomerModalOpen(false)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="customer-modal-title"
+            onClick={(event) => event.stopPropagation()}
+            className="glass-modal w-full max-w-xl max-h-[88vh] rounded-3xl overflow-hidden flex flex-col shadow-2xl"
+          >
+            <header className="p-5 sm:p-6 border-b border-slate-200/70 bg-white/70 flex items-start justify-between gap-4">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700">
+                  Venta actual
+                </span>
+                <h2 id="customer-modal-title" className="mt-1 text-xl font-black text-slate-900">
+                  Seleccionar cliente
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Busca por nombre, documento o teléfono.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCustomerModalOpen(false)}
+                aria-label="Cerrar selector de clientes"
+                className="w-9 h-9 shrink-0 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </header>
+
+            <div className="p-4 sm:p-5 flex flex-col gap-3 flex-1 min-h-0">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  ref={customerSearchRef}
+                  type="search"
+                  value={customerSearch}
+                  onChange={(event) => setCustomerSearch(event.target.value)}
+                  placeholder="Buscar cliente..."
+                  aria-label="Buscar clientes"
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none"
+                />
+              </div>
+
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedCustomer(null);
+                    setIsCustomerModalOpen(false);
+                  }}
+                  className={`w-full p-3.5 rounded-2xl border text-left flex items-center gap-3 transition-all cursor-pointer ${
+                    !selectedCustomer
+                      ? "bg-emerald-50 border-emerald-300 ring-1 ring-emerald-200"
+                      : "bg-white/80 border-slate-200/80 hover:bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <span className="w-11 h-11 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center shrink-0">
+                    <User className="w-5 h-5" />
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm font-extrabold text-slate-900">Cliente Mostrador</span>
+                    <span className="block mt-0.5 text-xs text-slate-500">Venta rápida sin asociar una cuenta</span>
+                  </span>
+                  {!selectedCustomer && (
+                    <span className="text-[10px] font-black uppercase tracking-wide text-emerald-700">Actual</span>
+                  )}
+                </button>
+
+                {filteredCustomers.map((customer) => {
+                  const isSelected = selectedCustomer?.id === customer.id;
+                  const initials = customer.name
+                    .split(" ")
+                    .map((part) => part[0])
+                    .slice(0, 2)
+                    .join("")
+                    .toUpperCase();
+
+                  return (
+                    <button
+                      key={customer.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCustomer(customer);
+                        setIsCustomerModalOpen(false);
+                      }}
+                      className={`w-full p-3.5 rounded-2xl border text-left flex items-center gap-3 transition-all cursor-pointer ${
+                        isSelected
+                          ? "bg-emerald-50 border-emerald-300 ring-1 ring-emerald-200"
+                          : "bg-white/80 border-slate-200/80 hover:bg-white hover:border-emerald-200"
+                      }`}
+                    >
+                      <span className="w-11 h-11 rounded-xl bg-[#0B192C] text-white text-xs font-black flex items-center justify-center shrink-0">
+                        {initials}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-sm font-extrabold text-slate-900 truncate">{customer.name}</span>
+                        <span className="block mt-0.5 text-xs text-slate-500 truncate">
+                          {[customer.documentId, customer.phone].filter(Boolean).join(" · ") || "Cliente registrado"}
+                        </span>
+                      </span>
+                      <span className="hidden sm:flex gap-3 shrink-0">
+                        <span className="text-right">
+                          <span className="block text-[10px] uppercase tracking-wide font-bold text-slate-400">Deuda</span>
+                          <span className="block text-xs font-mono font-bold text-amber-700">
+                            {formatCurrencyRD(customer.balance)}
+                          </span>
+                        </span>
+                        <span className="text-right">
+                          <span className="block text-[10px] uppercase tracking-wide font-bold text-slate-400">Límite</span>
+                          <span className="block text-xs font-mono font-bold text-slate-700">
+                            {formatCurrencyRD(customer.creditLimit)}
+                          </span>
+                        </span>
+                      </span>
+                      <span className={`text-[10px] font-black uppercase tracking-wide ${
+                        isSelected ? "text-emerald-700" : "text-slate-400"
+                      }`}>
+                        {isSelected ? "Actual" : "Elegir"}
+                      </span>
+                    </button>
+                  );
+                })}
+
+                {filteredCustomers.length === 0 && (
+                  <div className="py-10 text-center">
+                    <div className="w-12 h-12 mx-auto rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center">
+                      <Search className="w-5 h-5" />
+                    </div>
+                    <p className="mt-3 text-sm font-bold text-slate-700">No se encontraron clientes</p>
+                    <p className="mt-1 text-xs text-slate-500">Prueba con otro nombre, documento o teléfono.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <footer className="px-5 py-3 border-t border-slate-200/70 bg-white/60 text-[11px] text-slate-500">
+              La deuda y el crédito del cliente se muestran al seleccionarlo.
+            </footer>
+          </section>
+        </div>
+      )}
+
       <WeightInputModal
         key={modalProduct?.id || "no-product"}
         isOpen={isWeightModalOpen}
