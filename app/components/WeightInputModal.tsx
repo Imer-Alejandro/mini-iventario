@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Scale, X, Check, Sparkles } from "lucide-react";
 import { TactileNumpad } from "./TactileNumpad";
-import { calculateLineTotal, formatCurrencyRD } from "@/lib/money";
+import { calculateLineTotal, formatCurrencyRD, QTY_RE, validateAndParseQty } from "@/lib/money";
 import { MeatBadge } from "@/lib/icons/meat-icons";
 
 interface WeightInputModalProps {
@@ -35,16 +35,13 @@ export function WeightInputModal({
 
   // Cálculo en vivo del subtotal de la línea con exactitud decimal ROUND_HALF_UP
   let lineTotalPreview = "0.00";
-  try {
-    if (weight && parseFloat(weight) > 0) {
-      lineTotalPreview = calculateLineTotal(weight, product.price, product.allowsDecimals);
-    }
-  } catch {
-    lineTotalPreview = "0.00";
+  const isValidWeight = QTY_RE.test(weight) && (product.allowsDecimals || !weight.includes("."));
+  if (isValidWeight && validateAndParseQty(weight, product.allowsDecimals).gt(0)) {
+    lineTotalPreview = calculateLineTotal(weight, product.price, product.allowsDecimals);
   }
 
   const handleConfirm = () => {
-    if (!weight || parseFloat(weight) <= 0) return;
+    if (!isValidWeight || !validateAndParseQty(weight, product.allowsDecimals).gt(0)) return;
     onConfirm(weight, unit);
     onClose();
   };
@@ -91,9 +88,31 @@ export function WeightInputModal({
                 Lectura de Balanza ({unit})
               </span>
               <div className="flex items-baseline gap-1.5">
-                <span className="text-4xl sm:text-5xl font-black font-mono text-slate-900 tracking-tight">
-                  {weight || "0.000"}
-                </span>
+                <input
+                  type="text"
+                  inputMode={product.allowsDecimals ? "decimal" : "numeric"}
+                  aria-label={`Cantidad de ${product.name}`}
+                  autoComplete="off"
+                  maxLength={product.allowsDecimals ? 15 : 11}
+                  placeholder={product.allowsDecimals ? "0.000" : "0"}
+                  value={weight}
+                  onFocus={(event) => event.currentTarget.select()}
+                  onChange={(event) => {
+                    const enteredValue = event.currentTarget.value.replace(",", ".");
+                    const nextValue = enteredValue.startsWith(".") ? `0${enteredValue}` : enteredValue;
+                    const pattern = product.allowsDecimals
+                      ? /^\d{0,11}(?:\.\d{0,3})?$/
+                      : /^\d{0,11}$/;
+                    if (nextValue === "" || pattern.test(nextValue)) setWeight(nextValue);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      handleConfirm();
+                    }
+                  }}
+                  className="w-full min-w-0 bg-transparent text-4xl sm:text-5xl font-black font-mono text-slate-900 tracking-tight outline-none"
+                />
                 <span className="text-lg text-emerald-700 font-bold">{unit}</span>
               </div>
             </div>
@@ -141,6 +160,7 @@ export function WeightInputModal({
             value={weight}
             onChange={setWeight}
             maxDecimals={product.allowsDecimals ? 3 : 0}
+            maxIntegerDigits={11}
             quickAmounts={
               product.allowsDecimals
                 ? ["0.250", "0.500", "1.000", "1.500", "2.000", "5.000"]
@@ -153,7 +173,7 @@ export function WeightInputModal({
           <button
             type="button"
             onClick={handleConfirm}
-            disabled={!weight || parseFloat(weight) <= 0}
+            disabled={!isValidWeight || !validateAndParseQty(weight, product.allowsDecimals).gt(0)}
             className="w-full py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 active:scale-98 disabled:opacity-40 text-white font-black rounded-2xl shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 text-base cursor-pointer"
           >
             <Check className="w-5 h-5 stroke-[2.5]" />

@@ -8,6 +8,7 @@ import {
   checkCreditAvailability,
   sumQuantities,
   validateAndParseAmount,
+  appendNumericInput,
 } from "../index";
 import Decimal from "decimal.js";
 
@@ -62,6 +63,12 @@ function runTests() {
   }
   assert("Importe con subcentavos '0.001' es rechazado", rejectedSubcentAmount);
   assert("Importe monetario conserva los centavos exactos", validateAndParseAmount("12.34").toFixed(2) === "12.34");
+  assert("Teclado reemplaza cero inicial al ingresar un entero", appendNumericInput("0", "7") === "7");
+  assert("Teclado conserva el cero antes del decimal", appendNumericInput("0.", "5") === "0.5");
+  assert("Teclado limita importes a dos decimales", appendNumericInput("12.34", "5") === "12.34");
+  assert("Teclado limita la cantidad de dígitos enteros", appendNumericInput("123", "4", 2, 3) === "123");
+  assert("Teclado conserva tres decimales para pesaje", appendNumericInput("1.27", "5", 3, 11) === "1.275");
+  assert("Teclado deshabilita decimales para unidades enteras", appendNumericInput("12", ".", 0, 11) === "12");
 
   // 7. Cantidad '1.2756' (más de 3 decimales) -> Rechazada
   let rejectedExtraDecimals = false;

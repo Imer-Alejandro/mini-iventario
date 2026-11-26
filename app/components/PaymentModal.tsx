@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   X,
   CreditCard,
@@ -57,11 +57,14 @@ export function PaymentModal({
   const [supervisorPin, setSupervisorPin] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const isSubmittingRef = useRef(false);
 
   if (!isOpen) return null;
 
   // Cálculo exacto de cambio con Decimal.js
-  const changeCalc = calculateChange(paidInput || "0", totalAmount);
+  const enteredAmount = paidInput.endsWith(".") ? paidInput.slice(0, -1) || "0" : paidInput || "0";
+  const amountForCalculation = enteredAmount.startsWith(".") ? `0${enteredAmount}` : enteredAmount;
+  const changeCalc = calculateChange(amountForCalculation, totalAmount);
 
   // Verificación de crédito si selecciona venta a crédito
   let creditStatus = null;
@@ -72,6 +75,7 @@ export function PaymentModal({
   }
 
   const handleQuickAmount = (val: string) => {
+    setErrorMsg(null);
     if (val === "Exacto") {
       setPaidInput(totalAmount);
     } else {
@@ -80,6 +84,8 @@ export function PaymentModal({
   };
 
   const handleSubmit = async () => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     try {
       setIsSubmitting(true);
       setErrorMsg(null);
@@ -87,7 +93,6 @@ export function PaymentModal({
       if (paymentType === "CONTADO" && paymentMethod === "EFECTIVO") {
         if (!changeCalc.isSufficient) {
           setErrorMsg(`El monto recibido es insuficiente. Falta ${formatCurrencyRD(changeCalc.remainingDue)}`);
-          setIsSubmitting(false);
           return;
         }
       }
@@ -95,12 +100,10 @@ export function PaymentModal({
       if (paymentType === "CREDITO") {
         if (!customer) {
           setErrorMsg("Para vender a crédito debe seleccionar un cliente previamente");
-          setIsSubmitting(false);
           return;
         }
         if (creditStatus && !creditStatus.allowed && !supervisorPin) {
           setErrorMsg(`El saldo excede el límite de crédito en ${formatCurrencyRD(creditStatus.exceededAmount)}. Ingrese el PIN de supervisor para autorizar.`);
-          setIsSubmitting(false);
           return;
         }
       }
@@ -108,8 +111,8 @@ export function PaymentModal({
       await onCompleteSale({
         paymentType,
         paymentMethod,
-        paidAmount: paidInput,
-        changeAmount: changeCalc.change,
+        paidAmount: paymentType === "CONTADO" && paymentMethod === "EFECTIVO" ? amountForCalculation : undefined,
+        changeAmount: paymentType === "CONTADO" && paymentMethod === "EFECTIVO" ? changeCalc.change : undefined,
         supervisorPin: supervisorPin || undefined,
       });
 
@@ -117,6 +120,7 @@ export function PaymentModal({
     } catch (error: unknown) {
       setErrorMsg(error instanceof Error ? error.message : "Error al procesar la venta");
     } finally {
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -231,7 +235,9 @@ export function PaymentModal({
                 <p className="text-xs text-slate-500 font-medium">Seleccione la forma de liquidación</p>
               </div>
               <button
+                type="button"
                 onClick={onClose}
+                disabled={isSubmitting}
                 className="w-8 h-8 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
@@ -305,9 +311,34 @@ export function PaymentModal({
                     </span>
                     <div className="flex items-baseline gap-1">
                       <span className="text-sm font-bold text-slate-500">RD$</span>
-                      <span className="text-3xl sm:text-4xl font-black font-mono text-slate-900 tracking-tight">
-                        {paidInput || "0"}
-                      </span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        aria-label="Efectivo recibido"
+                        autoComplete="off"
+                        maxLength={17}
+                        placeholder="0.00"
+                        value={paidInput}
+                        onFocus={(event) => event.currentTarget.select()}
+                        onChange={(event) => {
+                          const nextValue = event.currentTarget.value.replace(",", ".");
+                          if (
+                            nextValue === "" ||
+                            /^\d{1,14}(?:\.\d{0,2})?$/.test(nextValue) ||
+                            /^\.\d{1,2}$/.test(nextValue)
+                          ) {
+                            setPaidInput(nextValue);
+                            setErrorMsg(null);
+                          }
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            void handleSubmit();
+                          }
+                        }}
+                        className="w-full min-w-0 bg-transparent text-3xl sm:text-4xl font-black font-mono text-slate-900 tracking-tight outline-none"
+                      />
                     </div>
                   </div>
 
@@ -330,8 +361,12 @@ export function PaymentModal({
                 {/* Teclado Táctil con Chips de RD$ */}
                 <TactileNumpad
                   value={paidInput}
-                  onChange={setPaidInput}
+                  onChange={(value) => {
+                    setPaidInput(value);
+                    setErrorMsg(null);
+                  }}
                   maxDecimals={2}
+                  maxIntegerDigits={14}
                   prefix="RD$"
                   quickAmounts={["100", "500", "1000", "2000", "Exacto"]}
                   onQuickAmountSelect={handleQuickAmount}

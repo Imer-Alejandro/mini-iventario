@@ -1,4 +1,7 @@
 import { localDB, OutboxOperation, LocalProduct, LocalCustomer, JsonValue } from "./db";
+import { generateClientOpId } from "./client-op-id";
+
+export { generateClientOpId } from "./client-op-id";
 
 export interface SyncStatus {
   isOnline: boolean;
@@ -6,20 +9,6 @@ export interface SyncStatus {
   rejectedCount: number;
   lastSyncAt: string | null;
   isSyncing: boolean;
-}
-
-/**
- * Genera un UUID v4 criptográfico estándar para idempotencia
- */
-export function generateClientOpId(): string {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
 }
 
 /**

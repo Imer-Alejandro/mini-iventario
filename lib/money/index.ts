@@ -13,6 +13,30 @@ export const PRICE_RE = /^\d{1,11}(\.\d{1,4})?$/;
 export const AMOUNT_RE = /^\d{1,14}(\.\d{1,2})?$/;
 const SIGNED_AMOUNT_RE = /^-?\d{1,14}(\.\d{1,2})?$/;
 
+export function appendNumericInput(
+  value: string,
+  digit: string,
+  maxDecimals = 2,
+  maxIntegerDigits = 14,
+): string {
+  if (digit === ".") {
+    if (maxDecimals === 0 || value.includes(".")) return value;
+    return value === "" ? "0." : `${value}.`;
+  }
+
+  if (!/^\d$/.test(digit)) return value;
+
+  const [integer, fractional] = value.split(".");
+  if (fractional !== undefined) {
+    if (fractional.length >= maxDecimals) return value;
+    return `${value}${digit}`;
+  }
+
+  if (integer.length >= maxIntegerDigits) return value;
+  if (value === "0") return digit;
+  return `${value}${digit}`;
+}
+
 /**
  * Valida un importe monetario DECIMAL(16,2), sin aceptar subcentavos.
  */

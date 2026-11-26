@@ -83,8 +83,8 @@ export function Navbar({ user }: { user: NavbarUser }) {
       {/* Sidebar Escritorio con Acabado Glassmorphism */}
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col glass-panel border-r border-white/70 px-4 py-5 lg:flex shadow-xs">
         {/* Logotipo Oficial Korta Business */}
-        <Link href="/" className="mb-7 flex h-12 items-center px-2 transition-transform hover:scale-[1.02]" aria-label="Korta Business, inicio">
-          <div className="relative h-11 w-44">
+        <Link href="/" className="mb-7 flex h-16 items-center px-2 transition-transform hover:scale-[1.02]" aria-label="Korta Business, inicio">
+          <div className="relative h-16 w-52">
             <Image src="/korta-logo.png" alt="Korta Business" fill priority className="object-contain object-left" />
           </div>
         </Link>
@@ -168,8 +168,8 @@ export function Navbar({ user }: { user: NavbarUser }) {
 
       {/* Header Móvil con Glassmorfismo */}
       <header className="sticky top-0 z-40 glass-panel border-b border-white/70 lg:hidden">
-        <div className="flex h-14 items-center justify-between px-4">
-          <Link href="/" className="relative h-9 w-36" aria-label="Korta Business, inicio">
+        <div className="flex h-16 items-center justify-between px-4">
+          <Link href="/" className="relative h-11 w-44" aria-label="Korta Business, inicio">
             <Image src="/korta-logo.png" alt="Korta Business" fill priority className="object-contain object-left" />
           </Link>
           <div

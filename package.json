@@ -2,10 +2,14 @@
   "name": "mini-inventario",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/main.mjs",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "desktop:prepare": "npm run build && node scripts/prepare-desktop.mjs",
+    "desktop:run": "electron .",
+    "desktop:installer": "npm run desktop:prepare && electron-builder --win nsis",
     "lint": "eslint",
     "test": "node scripts/run-tests.mjs && node scripts/test-sqlite.mjs",
     "db:migrate": "prisma migrate deploy",
@@ -32,6 +36,8 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
     "prisma": "^6.4.1",
@@ -41,5 +47,51 @@
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
+  },
+  "build": {
+    "appId": "com.kortabusiness.miniinventario",
+    "productName": "KortaBusiness",
+    "directories": {
+      "output": "release-desktop"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".next/standalone",
+        "to": "standalone"
+      },
+      {
+        "from": ".next/standalone/node_modules",
+        "to": "standalone/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "public/iconoEscritorio.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "KortaBusiness-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "public/iconoEscritorio.ico",
+      "uninstallerIcon": "public/iconoEscritorio.ico",
+      "installerHeaderIcon": "public/iconoEscritorio.ico"
+    }
   }
 }

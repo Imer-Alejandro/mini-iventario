@@ -22,6 +22,7 @@ import { WeightInputModal } from "@/app/components/WeightInputModal";
 import { PaymentModal } from "@/app/components/PaymentModal";
 import { ThermalTicketModal } from "@/app/components/ThermalTicketModal";
 import { MeatBadge } from "@/lib/icons/meat-icons";
+import { generateClientOpId } from "@/lib/offline/client-op-id";
 
 interface CartLine {
   productId: string;
@@ -97,6 +98,7 @@ export default function PosVentasPage() {
   // Ref para input de búsqueda y atajos
   const searchInputRef = useRef<HTMLInputElement>(null);
   const customerSearchRef = useRef<HTMLInputElement>(null);
+  const saleOperationIdRef = useRef<string | null>(null);
 
   // Carga inicial de catálogo y clientes
   useEffect(() => {
@@ -247,6 +249,7 @@ export default function PosVentasPage() {
     if (confirm("¿Está seguro de que desea cancelar la venta actual y vaciar el carrito?")) {
       setCart([]);
       setSelectedCustomer(null);
+      saleOperationIdRef.current = null;
     }
   };
 
@@ -255,6 +258,7 @@ export default function PosVentasPage() {
     if (cart.length === 0) return;
     alert("Venta pausada y guardada en memoria. Puede atender al siguiente cliente.");
     setCart([]);
+    saleOperationIdRef.current = null;
   };
 
   // Procesar cobro final
@@ -265,10 +269,13 @@ export default function PosVentasPage() {
     changeAmount?: string;
     supervisorPin?: string;
   }) => {
+    const clientOpId = saleOperationIdRef.current ?? generateClientOpId();
+    saleOperationIdRef.current = clientOpId;
     const response = await fetch("/api/sales", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        clientOpId,
         customerId: selectedCustomer?.id,
         paymentType: params.paymentType,
         paymentMethod: params.paymentMethod,
@@ -300,6 +307,7 @@ export default function PosVentasPage() {
     // Vaciar carrito
     setCart([]);
     setSelectedCustomer(null);
+    saleOperationIdRef.current = null;
     setIsTicketModalOpen(true);
   };
 
@@ -503,7 +511,10 @@ export default function PosVentasPage() {
               {cart.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setCart([])}
+                  onClick={() => {
+                    setCart([]);
+                    saleOperationIdRef.current = null;
+                  }}
                   className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition-colors"
                   title="Vaciar carrito"
                 >
@@ -799,22 +810,26 @@ export default function PosVentasPage() {
         </div>
       )}
 
-      <WeightInputModal
-        key={modalProduct?.id || "no-product"}
-        isOpen={isWeightModalOpen}
-        onClose={() => setIsWeightModalOpen(false)}
-        product={modalProduct}
-        onConfirm={handleConfirmWeight}
-      />
+      {isWeightModalOpen && (
+        <WeightInputModal
+          key={modalProduct?.id || "no-product"}
+          isOpen={isWeightModalOpen}
+          onClose={() => setIsWeightModalOpen(false)}
+          product={modalProduct}
+          onConfirm={handleConfirmWeight}
+        />
+      )}
 
-      <PaymentModal
-        isOpen={isPaymentModalOpen}
-        onClose={() => setIsPaymentModalOpen(false)}
-        totalAmount={totalAmount}
-        items={cart}
-        customer={selectedCustomer}
-        onCompleteSale={handleCompleteSale}
-      />
+      {isPaymentModalOpen && (
+        <PaymentModal
+          isOpen={isPaymentModalOpen}
+          onClose={() => setIsPaymentModalOpen(false)}
+          totalAmount={totalAmount}
+          items={cart}
+          customer={selectedCustomer}
+          onCompleteSale={handleCompleteSale}
+        />
+      )}
 
       <ThermalTicketModal
         isOpen={isTicketModalOpen}

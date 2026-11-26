@@ -19,6 +19,9 @@
 
 # production
 /build
+/release/
+/release-check/
+/release-desktop/
 
 # misc
 .DS_Store

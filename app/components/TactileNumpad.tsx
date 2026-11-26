@@ -1,6 +1,7 @@
 "use client";
 
 import { Delete } from "lucide-react";
+import { appendNumericInput } from "@/lib/money";
 
 interface TactileNumpadProps {
   value: string;
@@ -8,6 +9,7 @@ interface TactileNumpadProps {
   quickAmounts?: string[];
   onQuickAmountSelect?: (amount: string) => void;
   maxDecimals?: number;
+  maxIntegerDigits?: number;
   className?: string;
   prefix?: string;
 }
@@ -18,30 +20,12 @@ export function TactileNumpad({
   quickAmounts,
   onQuickAmountSelect,
   maxDecimals = 3,
+  maxIntegerDigits = 14,
   className = "",
   prefix = "",
 }: TactileNumpadProps) {
   const handleDigit = (digit: string) => {
-    if (digit === ".") {
-      if (value.includes(".")) return;
-      onChange(value === "" ? "0." : `${value}.`);
-      return;
-    }
-
-    if (value === "0") {
-      onChange(digit);
-      return;
-    }
-
-    // Comprobar límite de decimales
-    if (value.includes(".")) {
-      const parts = value.split(".");
-      if (parts[1] && parts[1].length >= maxDecimals) {
-        return; // No permite exceder los decimales permitidos
-      }
-    }
-
-    onChange(`${value}${digit}`);
+    onChange(appendNumericInput(value, digit, maxDecimals, maxIntegerDigits));
   };
 
   const handleBackspace = () => {
@@ -68,6 +52,7 @@ export function TactileNumpad({
                 key={amt}
                 type="button"
                 onClick={() => onQuickAmountSelect && onQuickAmountSelect(amt)}
+                aria-label={isExact ? "Usar el monto exacto de la venta" : `Usar ${prefix}${amt}`}
                 className={`py-2 px-1 text-xs font-bold rounded-xl border transition-all active:scale-95 shadow-xs text-center ${
                   isExact
                     ? "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
@@ -88,6 +73,7 @@ export function TactileNumpad({
             key={num}
             type="button"
             onClick={() => handleDigit(num)}
+            aria-label={`Digitar ${num}`}
             className="h-13 sm:h-14 text-2xl font-bold font-mono rounded-2xl border border-slate-200/80 bg-white/85 text-slate-800 shadow-xs hover:bg-white hover:border-slate-300 active:bg-slate-100 active:scale-95 transition-all flex items-center justify-center cursor-pointer"
           >
             {num}
@@ -98,6 +84,7 @@ export function TactileNumpad({
         <button
           type="button"
           onClick={() => handleDigit(".")}
+          aria-label="Digitar separador decimal"
           className="h-13 sm:h-14 text-2xl font-bold font-mono rounded-2xl border border-slate-200/80 bg-slate-50/80 text-slate-700 hover:bg-white active:scale-95 transition-all flex items-center justify-center cursor-pointer"
         >
           .
@@ -107,6 +94,7 @@ export function TactileNumpad({
         <button
           type="button"
           onClick={() => handleDigit("0")}
+          aria-label="Digitar cero"
           className="h-13 sm:h-14 text-2xl font-bold font-mono rounded-2xl border border-slate-200/80 bg-white/85 text-slate-800 shadow-xs hover:bg-white active:scale-95 transition-all flex items-center justify-center cursor-pointer"
         >
           0
@@ -116,6 +104,7 @@ export function TactileNumpad({
         <button
           type="button"
           onClick={handleBackspace}
+          aria-label="Borrar último dígito"
           className="h-13 sm:h-14 text-slate-600 rounded-2xl border border-slate-200/80 bg-slate-100/80 hover:bg-slate-200/80 active:scale-95 transition-all flex items-center justify-center cursor-pointer"
           title="Borrar último dígito"
         >
