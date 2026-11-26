@@ -294,6 +294,7 @@ model SupplierLedger {
   supplier    Supplier @relation(fields: [supplierId], references: [id])
   type        String
   amount      Decimal
+  clientOpId  String?  @unique @map("client_op_id")
   referenceId String?  @map("reference_id")
   note        String?
   userId      String   @map("user_id")
@@ -324,17 +325,31 @@ model StockAlert {
 // ----------------------------------------------------
 
 model User {
-  id           String   @id @default(cuid())
+  id           String        @id @default(cuid())
   name         String
-  email        String   @unique
-  pinHash      String   @map("pin_hash")
-  passwordHash String?  @map("password_hash")
-  roleId       String   @map("role_id")
-  role         Role     @relation(fields: [roleId], references: [id])
-  status       String   @default("ACTIVE")
-  createdAt    DateTime @default(now()) @map("created_at")
+  email        String        @unique
+  pinHash      String        @map("pin_hash")
+  passwordHash String?       @map("password_hash")
+  roleId       String        @map("role_id")
+  role         Role          @relation(fields: [roleId], references: [id])
+  status       String        @default("ACTIVE")
+  createdAt    DateTime      @default(now()) @map("created_at")
+  sessions     UserSession[]
 
   @@map("users")
+}
+
+model UserSession {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique @map("token_hash")
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("user_sessions")
 }
 
 model Role {

@@ -17,7 +17,7 @@ import {
   ArrowRight,
   X,
 } from "lucide-react";
-import { formatCurrencyRD, calculateLineTotal, sumLineTotals } from "@/lib/money";
+import { formatCurrencyRD, calculateLineTotal, sumLineTotals, sumQuantities } from "@/lib/money";
 import { WeightInputModal } from "@/app/components/WeightInputModal";
 import { PaymentModal } from "@/app/components/PaymentModal";
 import { ThermalTicketModal } from "@/app/components/ThermalTicketModal";
@@ -206,7 +206,10 @@ export default function PosVentasPage() {
       if (existingIdx >= 0) {
         const updated = [...prev];
         // En carnicería, sumar peso nuevo al peso anterior
-        const newQty = (parseFloat(updated[existingIdx].quantity) + parseFloat(quantity)).toFixed(3);
+        const newQty = sumQuantities(
+          [updated[existingIdx].quantity, quantity],
+          modalProduct.allowsDecimals,
+        );
         const newLineTotal = calculateLineTotal(newQty, modalProduct.price, modalProduct.allowsDecimals);
         updated[existingIdx] = {
           ...updated[existingIdx],

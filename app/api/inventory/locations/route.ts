@@ -2,8 +2,11 @@ import { NextResponse } from "next/server";
 import Decimal from "decimal.js";
 import { DEFAULT_SALES_LOCATION_ID, store } from "@/server/services/data-store";
 import { prisma } from "@/lib/db";
+import { requirePermission } from "@/server/services/auth.service";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requirePermission(request, "INVENTARIO.LEER");
+  if (!auth.ok) return auth.response;
   const [locations, stockByLocation] = await Promise.all([
     prisma.location.findMany({ orderBy: { name: "asc" } }),
     prisma.stockByLocation.findMany(),
@@ -18,6 +21,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const auth = await requirePermission(request, "INVENTARIO.GESTIONAR");
+  if (!auth.ok) return auth.response;
   try {
     const body = await request.json();
     const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -48,6 +53,8 @@ export async function POST(request: Request) {
 }
 
 export async function PUT(request: Request) {
+  const auth = await requirePermission(request, "INVENTARIO.GESTIONAR");
+  if (!auth.ok) return auth.response;
   try {
     const body = await request.json();
     if (process.env.NODE_ENV === "test") {

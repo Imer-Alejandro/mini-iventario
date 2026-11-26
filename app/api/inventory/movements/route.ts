@@ -2,8 +2,11 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import type { InventoryMovementData } from "@/server/services/data-store";
 import { recordInventoryMovement, recordMerma } from "@/server/services/inventory.service";
+import { requirePermission } from "@/server/services/auth.service";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requirePermission(request, "INVENTARIO.LEER");
+  if (!auth.ok) return auth.response;
   const movements = await prisma.inventoryMovement.findMany({ orderBy: { createdAt: "desc" } });
   return NextResponse.json(movements.map((movement) => ({
     ...movement,
@@ -13,6 +16,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const auth = await requirePermission(request, "INVENTARIO.GESTIONAR");
+  if (!auth.ok) return auth.response;
   try {
     const body = await request.json();
     let result: InventoryMovementData;
@@ -24,8 +29,7 @@ export async function POST(request: Request) {
         locationId: body.locationId || "loc-003",
         quantity: body.quantity,
         reason: body.reason,
-        userId: body.userId || "user-cajero-1",
-        authorizedBy: body.authorizedBy,
+        userId: auth.user.id,
       });
     } else {
       result = await recordInventoryMovement({
@@ -37,8 +41,7 @@ export async function POST(request: Request) {
         quantity: body.quantity,
         unitCost: body.unitCost,
         reason: body.reason,
-        userId: body.userId || "user-cajero-1",
-        authorizedBy: body.authorizedBy,
+        userId: auth.user.id,
       });
     }
 

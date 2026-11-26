@@ -3,8 +3,11 @@ import Decimal from "decimal.js";
 import { prisma } from "@/lib/db";
 import { getCashSessionReport } from "@/server/services/cash.service";
 import { getStockAlerts } from "@/server/services/inventory.service";
+import { requirePermission } from "@/server/services/auth.service";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requirePermission(request, "DASHBOARD.LEER");
+  if (!auth.ok) return auth.response;
   const [sales, activeCash, customers, products] = await Promise.all([
     prisma.sale.findMany({
       include: { lines: true, customer: { select: { name: true } } },

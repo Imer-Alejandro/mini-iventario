@@ -3,6 +3,7 @@ import { openCashSession, recordCashMovement, closeCashSession, getCashSessionRe
 import { createSale, voidSale } from "../sales.service";
 import { checkCustomerCredit, registerCustomerPayment, getCustomerAging } from "../credit.service";
 import { recordInventoryMovement, recordMerma, getStockAlerts } from "../inventory.service";
+import { recordSupplierLedgerMovement } from "../supplier.service";
 import { POST as createLocation, PUT as updateLocation } from "@/app/api/inventory/locations/route";
 import Decimal from "decimal.js";
 
@@ -33,6 +34,20 @@ async function runDomainServiceTests() {
   console.log("\n[GRUPO 1: GESTIÓN DE CAJA Y CIERRE DIARIO]");
   const activeSess = store.getActiveCashSession()!;
   assert("Sesión inicial abierta con RD$ 5,000.00", activeSess.openingAmount === "5000.00");
+
+  let subcentCashRejected = false;
+  try {
+    await recordCashMovement({
+      cashSessionId: activeSess.id,
+      type: "INGRESO_MANUAL",
+      amount: "0.001",
+      reason: "Prueba de precisión",
+      userId: "user-cajero-1",
+    });
+  } catch {
+    subcentCashRejected = true;
+  }
+  assert("Caja rechaza subcentavos antes de cambiar el acumulado", subcentCashRejected && activeSess.expectedAmount === "5000.00");
 
   // Registrar un ingreso manual
   await recordCashMovement({
@@ -98,6 +113,26 @@ async function runDomainServiceTests() {
   report = await getCashSessionReport(activeSess.id);
   assert("La caja NO se duplicó por reintento offline: sigue en RD$ 6,233.75", report.expectedAmount === "6233.75");
 
+  const resProductBeforeOversell = store.getProductById("prod-res-01")!;
+  const salesBeforeOversell = store.getSales().length;
+  const stockBeforeOversell = resProductBeforeOversell.currentStock;
+  let oversellRejected = false;
+  try {
+    await createSale({
+      paymentType: "CONTADO",
+      userId: "user-cajero-1",
+      lines: [{ productId: "prod-res-01", quantity: "999.000" }],
+    });
+  } catch {
+    oversellRejected = true;
+  }
+  assert(
+    "Venta sin stock suficiente se rechaza sin modificar inventario ni registrar venta",
+    oversellRejected &&
+      resProductBeforeOversell.currentStock === stockBeforeOversell &&
+      store.getSales().length === salesBeforeOversell,
+  );
+
   // -------------------------------------------------------------
   // TEST 4: Cuenta Corriente, Crédito y Abonos
   // -------------------------------------------------------------
@@ -105,6 +140,33 @@ async function runDomainServiceTests() {
   const customer = store.getCustomerById("cust-001")!; // Saldo previo: 4250.00, Límite: 25000.00
   const initialCustomerBalance = customer.balance;
 
+  let subcentPaymentRejected = false;
+  try {
+    await registerCustomerPayment({
+      customerId: customer.id,
+      amount: "0.001",
+      paymentMethod: "EFECTIVO",
+      userId: "user-cajero-1",
+    });
+  } catch {
+    subcentPaymentRejected = true;
+  }
+  assert("Abono rechaza subcentavos sin alterar la deuda", subcentPaymentRejected && customer.balance === initialCustomerBalance);
+
+  let subcentSupplierMovementRejected = false;
+  try {
+    await recordSupplierLedgerMovement({
+      supplierId: "supplier-test",
+      type: "FACTURA",
+      amount: "0.001",
+      userId: "user-cajero-1",
+    });
+  } catch {
+    subcentSupplierMovementRejected = true;
+  }
+  assert("Movimiento de proveedor rechaza subcentavos", subcentSupplierMovementRejected);
+
+  store.setStockByLocation("prod-cerdo-01", "loc-003", "14.000");
   const creditSale = await createSale({
     customerId: customer.id,
     paymentType: "CREDITO",
@@ -114,6 +176,24 @@ async function runDomainServiceTests() {
 
   const updatedCustomer = store.getCustomerById(customer.id)!;
   assert("Venta a crédito sumó exactamente a la deuda: 4250 + 1400 == 5650.00", updatedCustomer.balance === "5650.00", `Deuda: ${updatedCustomer.balance}`);
+
+  let overpaymentRejected = false;
+  try {
+    await registerCustomerPayment({
+      customerId: customer.id,
+      amount: "5650.01",
+      paymentMethod: "EFECTIVO",
+      userId: "user-cajero-1",
+    });
+  } catch {
+    overpaymentRejected = true;
+  }
+  assert(
+    "Abono mayor a deuda se rechaza sin cambiar saldo ni caja",
+    overpaymentRejected &&
+      store.getCustomerById(customer.id)!.balance === "5650.00" &&
+      (await getCashSessionReport(activeSess.id)).expectedAmount === "6233.75",
+  );
 
   // Registrar un abono en efectivo del cliente
   const paymentRes = await registerCustomerPayment({
@@ -149,6 +229,25 @@ async function runDomainServiceTests() {
     creditRejected = true;
   }
   assert("Venta que excede límite de crédito es bloqueada sin PIN de supervisor", creditRejected);
+
+  await recordInventoryMovement({
+    productId: "prod-res-01",
+    fromLocationId: "loc-001",
+    toLocationId: "loc-003",
+    type: "TRASLADO",
+    quantity: "15.750",
+    reason: "Reabastecimiento de mostrador para prueba",
+    userId: "user-carnicero-1",
+  });
+  await recordInventoryMovement({
+    productId: "prod-res-01",
+    fromLocationId: "loc-002",
+    toLocationId: "loc-003",
+    type: "TRASLADO",
+    quantity: "2.025",
+    reason: "Reabastecimiento de mostrador para prueba",
+    userId: "user-carnicero-1",
+  });
 
   // Ahora con PIN / autorización de supervisor
   const approvedOverlimitSale = await createSale({
@@ -236,16 +335,20 @@ async function runDomainServiceTests() {
   // -------------------------------------------------------------
   console.log("\n[GRUPO 9: GESTIÓN DE UBICACIONES]");
   store.reset();
+  const unauthenticatedLocationResponse = await createLocation(
+    new Request("http://localhost/api/inventory/locations", { method: "POST" }),
+  );
+  assert("Rechaza operaciones de inventario sin sesión", unauthenticatedLocationResponse.status === 401);
   const createLocationRequest = (name: string) =>
     new Request("http://localhost/api/inventory/locations", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-test-auth": process.env.TEST_AUTH_TOKEN ?? "" },
       body: JSON.stringify({ name }),
     });
   const updateLocationRequest = (body: { id: string; name: string; status: "ACTIVE" | "INACTIVE" }) =>
     new Request("http://localhost/api/inventory/locations", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-test-auth": process.env.TEST_AUTH_TOKEN ?? "" },
       body: JSON.stringify(body),
     });
 

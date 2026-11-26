@@ -13,7 +13,6 @@ import {
   ChevronRight,
   CheckCircle2,
   Sparkles,
-  ArrowUpRight,
   ShieldCheck,
 } from "lucide-react";
 import { formatCurrencyRD } from "@/lib/money";
@@ -53,7 +52,7 @@ interface DashboardData {
     suggestedQty: string;
   }>;
   dailySales: Array<{ date: string; label: string; total: string }>;
-  topProducts: Array<{ id: string; name: string; iconId?: string; quantity: string; total: string }>;
+  topProducts: Array<{ id: string; name: string; unit: string; iconId?: string; quantity: string; total: string }>;
 }
 
 export default function DashboardPage() {
@@ -78,22 +77,21 @@ export default function DashboardPage() {
   });
 
   return (
-    <div className="max-w-7xl mx-auto p-4 sm:p-6 space-y-6">
-      {/* Banner 360° Superior con Glassmorfismo & Identidad Korta Business */}
-      <div className="glass-panel rounded-3xl p-6 sm:p-8 shadow-xs flex flex-wrap items-center justify-between gap-6 relative overflow-hidden">
+    <div className="mx-auto max-w-[1440px] space-y-5 p-4 sm:p-6">
+      <div className="relative flex flex-wrap items-center justify-between gap-6 overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-7">
         <div className="space-y-1.5 max-w-xl">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-black text-emerald-800 bg-emerald-100/70 px-3 py-1 rounded-full flex items-center gap-1.5 shadow-xs">
+            <span className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">
               <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
               Vista 360° Operativa
             </span>
-            <span className="text-xs font-bold text-slate-500 capitalize">{todayDateStr}</span>
+            <span className="text-xs font-medium capitalize text-slate-500">{todayDateStr}</span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-            Control Financiero & Operativo de Carnicería
+          <h1 className="text-2xl text-slate-900 sm:text-3xl">
+            Resumen del negocio
           </h1>
-          <p className="text-xs sm:text-sm text-slate-600 font-medium">
-            Supervisa en vivo el flujo de caja, margen real de rentabilidad, stock al gramo y cuentas por cobrar en un solo panel.
+          <p className="text-sm text-slate-500">
+            Ventas, rentabilidad, caja, crédito e inventario en una sola vista.
           </p>
         </div>
 
@@ -101,17 +99,17 @@ export default function DashboardPage() {
         <div className="flex items-center gap-3">
           <Link
             href="/caja"
-            className="px-4 py-3.5 bg-white/80 hover:bg-white text-slate-700 border border-slate-200/90 text-xs font-black rounded-2xl shadow-xs transition-all flex items-center gap-2 cursor-pointer active:scale-95"
+            className="flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
           >
             <Wallet className="w-4 h-4 text-emerald-600" />
-            Control de Caja
+            Caja
           </Link>
           <Link
             href="/ventas"
-            className="px-6 py-3.5 bg-[#0B192C] hover:bg-[#182C44] active:scale-95 text-white font-black text-xs sm:text-sm rounded-2xl shadow-md shadow-[#0B192C]/20 transition-all flex items-center gap-2 cursor-pointer"
+            className="flex items-center gap-2 rounded-xl bg-[#0B192C] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#182C44]"
           >
             <ShoppingCart className="w-4 h-4 text-emerald-400" />
-            Abrir Punto de Venta
+            Nueva venta
           </Link>
         </div>
       </div>
@@ -119,21 +117,21 @@ export default function DashboardPage() {
       {/* Tarjetas Principales de KPIs Financieros 360° (Glass Cards) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* KPI 1: Ventas del Día */}
-        <div className="glass-card rounded-3xl p-5 flex flex-col justify-between">
+        <div className="flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-black uppercase tracking-wider text-slate-400">
-              Ventas Totales Hoy
+            <span className="text-xs font-semibold text-slate-500">
+              Ventas de hoy
             </span>
             <div className="w-10 h-10 rounded-2xl bg-emerald-100/80 text-emerald-800 flex items-center justify-center shadow-xs">
               <TrendingUp className="w-5 h-5" />
             </div>
           </div>
           <div>
-            <span className="text-2xl sm:text-3xl font-black font-mono text-[#0B192C] block tracking-tight">
+            <span className="block font-mono text-2xl font-semibold tracking-tight text-[#0B192C] sm:text-3xl">
               {metrics ? formatCurrencyRD(metrics.salesTotal) : "..."}
             </span>
             <div className="flex items-center gap-2 mt-2 text-xs text-slate-500 font-medium">
-              <span className="font-extrabold text-slate-700">{metrics?.salesCount || 0} ventas</span>
+              <span className="font-semibold text-slate-700">{metrics?.salesCount || 0} ventas</span>
               <span>·</span>
               <span>Ticket prom: {metrics ? formatCurrencyRD(metrics.avgTicket) : "..."}</span>
             </div>
@@ -141,41 +139,41 @@ export default function DashboardPage() {
         </div>
 
         {/* KPI 2: Margen Real Estimado */}
-        <div className="glass-card rounded-3xl p-5 flex flex-col justify-between">
+        <div className="flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-black uppercase tracking-wider text-slate-400">
-              Utilidad Bruta Estimada
+            <span className="text-xs font-semibold text-slate-500">
+              Utilidad bruta estimada
             </span>
             <div className="w-10 h-10 rounded-2xl bg-blue-100/80 text-blue-800 flex items-center justify-center shadow-xs">
               <DollarSign className="w-5 h-5" />
             </div>
           </div>
           <div>
-            <span className="text-2xl sm:text-3xl font-black font-mono text-emerald-700 block tracking-tight">
+            <span className="block font-mono text-2xl font-semibold tracking-tight text-emerald-700 sm:text-3xl">
               {metrics ? formatCurrencyRD(metrics.estimatedGrossProfit) : "..."}
             </span>
-            <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-800 font-black">
+            <div className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-emerald-800">
               <span>Margen comercial: {metrics?.profitMarginPct || "0"}%</span>
             </div>
           </div>
         </div>
 
         {/* KPI 3: Efectivo en Caja Abierta */}
-        <div className="glass-card rounded-3xl p-5 flex flex-col justify-between">
+        <div className="flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-black uppercase tracking-wider text-slate-400">
-              Efectivo en Caja
+            <span className="text-xs font-semibold text-slate-500">
+              Efectivo esperado
             </span>
             <div className="w-10 h-10 rounded-2xl bg-teal-100/80 text-teal-800 flex items-center justify-center shadow-xs">
               <Wallet className="w-5 h-5" />
             </div>
           </div>
           <div>
-            <span className="text-2xl sm:text-3xl font-black font-mono text-[#0B192C] block tracking-tight">
+            <span className="block font-mono text-2xl font-semibold tracking-tight text-[#0B192C] sm:text-3xl">
               {metrics ? formatCurrencyRD(metrics.activeCashExpected) : "..."}
             </span>
             <div className="flex items-center justify-between mt-2">
-              <span className={`text-[11px] font-black ${metrics?.isCashOpen ? "text-emerald-700" : "text-amber-700"}`}>
+              <span className={`text-[11px] font-semibold ${metrics?.isCashOpen ? "text-emerald-700" : "text-amber-700"}`}>
                 {metrics?.isCashOpen ? `Turno Abierto #${metrics.cashSessionNumber}` : "Caja Cerrada"}
               </span>
               <Link href="/caja" className="text-xs font-black text-slate-600 hover:text-emerald-700 flex items-center gap-0.5">
@@ -186,17 +184,17 @@ export default function DashboardPage() {
         </div>
 
         {/* KPI 4: Cartera por Cobrar */}
-        <div className="glass-card rounded-3xl p-5 flex flex-col justify-between">
+        <div className="flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-black uppercase tracking-wider text-slate-400">
-              Cuentas por Cobrar
+            <span className="text-xs font-semibold text-slate-500">
+              Cuentas por cobrar
             </span>
             <div className="w-10 h-10 rounded-2xl bg-amber-100/80 text-amber-800 flex items-center justify-center shadow-xs">
               <Users className="w-5 h-5" />
             </div>
           </div>
           <div>
-            <span className="text-2xl sm:text-3xl font-black font-mono text-rose-700 block tracking-tight">
+            <span className="block font-mono text-2xl font-semibold tracking-tight text-rose-700 sm:text-3xl">
               {metrics ? formatCurrencyRD(metrics.totalDebtOwed) : "..."}
             </span>
             <div className="flex items-center justify-between mt-2 text-xs text-slate-500 font-medium">
@@ -211,11 +209,11 @@ export default function DashboardPage() {
 
       {/* Gráfica de Tendencia y Accesos Rápidos */}
       <section className="grid gap-5 lg:grid-cols-12">
-        <div aria-busy={isLoading} className="glass-panel rounded-3xl p-5 sm:p-6 lg:col-span-8 shadow-xs">
+        <div aria-busy={isLoading} className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-6 lg:col-span-8">
           <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-800">Tendencia de Ingresos</p>
-              <h2 className="mt-1 text-base font-black text-slate-900">Ventas de los Últimos 7 Días</h2>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-800">Rendimiento</p>
+              <h2 className="mt-1 text-lg text-slate-900">Ventas de los últimos 7 días</h2>
               <p className="mt-1 text-xs text-slate-500 font-medium">Comparativo diario en pesos dominicanos (RD$)</p>
             </div>
             <Link
@@ -259,10 +257,10 @@ export default function DashboardPage() {
         </div>
 
         {/* Accesos Rápidos Táctiles */}
-        <div className="glass-panel rounded-3xl p-5 sm:p-6 lg:col-span-4 shadow-xs">
+        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-6 lg:col-span-4">
           <div className="mb-4">
-            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-800">Flujo Operativo</p>
-            <h2 className="mt-1 text-base font-black text-slate-900">Accesos Rápidos</h2>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-800">Operaciones</p>
+            <h2 className="mt-1 text-lg text-slate-900">Accesos rápidos</h2>
             <p className="mt-1 text-xs text-slate-500 font-medium">Módulos principales del sistema</p>
           </div>
           <div className="space-y-2.5">
@@ -275,7 +273,7 @@ export default function DashboardPage() {
               <Link
                 key={href}
                 href={href}
-                className="flex items-center gap-3.5 rounded-2xl border border-white/80 bg-white/70 p-3 transition-all hover:bg-white hover:border-emerald-200 hover:shadow-xs active:scale-98"
+                className="flex items-center gap-3.5 rounded-xl border border-slate-100 bg-slate-50/70 p-3 transition hover:border-emerald-200 hover:bg-emerald-50/50"
               >
                 <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700">
                   <Icon className="h-4 w-4" />
@@ -294,11 +292,11 @@ export default function DashboardPage() {
       {/* Grilla 360°: Control de Cierres Diarios y Distribución de Cortes */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* PANEL 1: Cierres Diarios y Flujo de Caja */}
-        <div className="lg:col-span-6 glass-panel rounded-3xl p-6 shadow-xs flex flex-col justify-between">
+        <div className="flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-6 lg:col-span-6">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="font-black text-slate-900 text-base">Control de Turno & Arqueo</h3>
+                <h3 className="text-lg text-slate-900">Control de caja</h3>
                 <p className="text-xs text-slate-500 font-medium">Garantía de cierre diario sin descuadres</p>
               </div>
               <span
@@ -351,11 +349,11 @@ export default function DashboardPage() {
         </div>
 
         {/* PANEL 2: Ventas por Categoría de Carne */}
-        <div className="lg:col-span-6 glass-panel rounded-3xl p-6 shadow-xs flex flex-col justify-between">
+        <div className="flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-6 lg:col-span-6">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="font-black text-slate-900 text-base">Ventas por Tipo de Carne</h3>
+                <h3 className="text-lg text-slate-900">Ventas por categoría</h3>
                 <p className="text-xs text-slate-500 font-medium">Volumen de los últimos 7 días</p>
               </div>
               <Link href="/inventario" className="text-xs font-bold text-slate-500 hover:text-emerald-700">
@@ -402,9 +400,9 @@ export default function DashboardPage() {
       {/* Tablas Inferiores: Últimas Ventas y Alertas de Stock */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Últimas Ventas */}
-        <div className="lg:col-span-7 glass-panel rounded-3xl p-6 shadow-xs space-y-4">
+        <div className="space-y-4 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-6 lg:col-span-6">
           <div className="flex items-center justify-between">
-            <h3 className="font-black text-slate-900 text-base">Últimas Ventas Emitidas</h3>
+            <h3 className="text-lg text-slate-900">Ventas recientes</h3>
             <Link href="/ventas" className="text-xs font-bold text-emerald-700 hover:underline">
               Ir al POS →
             </Link>
@@ -453,11 +451,11 @@ export default function DashboardPage() {
         </div>
 
         {/* Alertas de Reposición */}
-        <div className="lg:col-span-5 glass-panel rounded-3xl p-6 shadow-xs space-y-4">
+        <div className="space-y-4 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-6 lg:col-span-3">
           <div className="flex items-center justify-between">
-            <h3 className="font-black text-slate-900 text-base flex items-center gap-2">
+            <h3 className="flex items-center gap-2 text-lg text-slate-900">
               <AlertTriangle className="w-4 h-4 text-amber-600" />
-              Stock Crítico / Reponer
+              Stock bajo
             </h3>
             <Link href="/inventario" className="text-xs font-bold text-emerald-700 hover:underline">
               Inventario →
@@ -466,7 +464,7 @@ export default function DashboardPage() {
 
           {data?.alerts && data.alerts.length > 0 ? (
             <div className="space-y-2.5">
-              {data.alerts.slice(0, 4).map((al) => (
+              {data.alerts.slice(0, 3).map((al) => (
                 <div
                   key={al.productId}
                   className="p-3 rounded-2xl bg-white/80 border border-slate-200/80 flex items-center justify-between text-xs shadow-xs"
@@ -489,6 +487,34 @@ export default function DashboardPage() {
               <CheckCircle2 className="w-6 h-6 text-emerald-500" />
               <span>Todos los niveles de carne están sobre el mínimo</span>
             </div>
+          )}
+        </div>
+
+        <div className="space-y-4 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-6 lg:col-span-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-800">Rendimiento</p>
+              <h3 className="mt-1 text-lg text-slate-900">Más vendidos</h3>
+            </div>
+            <Package className="h-5 w-5 text-emerald-700" />
+          </div>
+          {data?.topProducts.length ? (
+            <div className="space-y-3">
+              {data.topProducts.slice(0, 5).map((product, index) => (
+                <div key={product.id} className="flex items-center gap-2">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-xs font-semibold text-emerald-800">
+                    {index + 1}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-semibold text-slate-800">{product.name}</span>
+                    <span className="text-[11px] text-slate-500">{product.quantity} {product.unit}</span>
+                  </span>
+                  <span className="font-mono text-xs font-semibold text-slate-800">{formatCurrencyRD(product.total)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-8 text-center text-xs text-slate-400">Aún no hay ventas registradas esta semana.</div>
           )}
         </div>
       </div>

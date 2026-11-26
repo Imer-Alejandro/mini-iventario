@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { validateAndParseAmount } from "@/lib/money";
 import { prisma } from "@/lib/db";
 import {
   calculateCountedCash,
@@ -87,9 +88,9 @@ function mapPersistedCashSession(
  * Regla: Solo una caja abierta simultáneamente por estación/cajero.
  */
 export async function openCashSession(params: OpenSessionParams): Promise<CashSessionData> {
+  const opening = validateAndParseAmount(params.openingAmount || "0");
+  if (opening.isNegative()) throw new Error("El fondo de apertura no puede ser negativo");
   if (process.env.NODE_ENV !== "test") {
-    const opening = new Decimal(params.openingAmount || "0");
-    if (opening.isNegative()) throw new Error("El fondo de apertura no puede ser negativo");
     return prisma.$transaction(async (tx) => {
       const active = await tx.cashSession.findFirst({ where: { status: "OPEN" } });
       if (active) {
@@ -124,18 +125,13 @@ export async function openCashSession(params: OpenSessionParams): Promise<CashSe
     });
   }
 
-  const openingDec = new Decimal(params.openingAmount || "0");
-  if (openingDec.isNegative()) {
-    throw new Error("El fondo de apertura no puede ser negativo");
-  }
-
   // Verificar si ya existe una sesión abierta
   const activeSession = store.getActiveCashSession();
   if (activeSession) {
     throw new Error(`Ya existe una caja abierta (#${activeSession.sessionNumber}) a nombre de ${activeSession.userName}. Debe cerrarla antes de abrir una nueva.`);
   }
 
-  const openingStr = openingDec.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
+  const openingStr = opening.toFixed(2);
 
   const session = store.createCashSession({
     userId: params.userId,
@@ -160,9 +156,9 @@ export async function openCashSession(params: OpenSessionParams): Promise<CashSe
  * Registra un movimiento de caja (Venta, Abono, Ingreso, Retiro)
  */
 export async function recordCashMovement(params: RecordCashMovementParams): Promise<CashMovementData> {
+  const amount = validateAndParseAmount(params.amount);
+  if (amount.isZero() || amount.isNegative()) throw new Error("El monto del movimiento debe ser un número positivo mayor que cero");
   if (process.env.NODE_ENV !== "test") {
-    const amount = new Decimal(params.amount);
-    if (amount.isZero() || amount.isNegative()) throw new Error("El monto del movimiento debe ser un número positivo mayor que cero");
     if ((params.type === "RETIRO_MANUAL" || params.type === "INGRESO_MANUAL") && !params.reason?.trim()) {
       throw new Error("Los retiros e ingresos manuales exigen un motivo obligatorio");
     }
@@ -186,7 +182,7 @@ export async function recordCashMovement(params: RecordCashMovementParams): Prom
       const session = await tx.cashSession.findUnique({ where: { id: params.cashSessionId } });
       if (!session) throw new Error("La sesión de caja especificada no existe");
       if (session.status !== "OPEN") throw new Error("No se pueden registrar movimientos en una caja ya cerrada");
-      const amountStr = amount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
+      const amountStr = amount.toFixed(2);
       const current = new Decimal(session.expectedAmount.toString());
       const next = ["VENTA_EFECTIVO", "ABONO_EFECTIVO", "INGRESO_MANUAL"].includes(params.type)
         ? current.plus(amount)
@@ -238,12 +234,7 @@ export async function recordCashMovement(params: RecordCashMovementParams): Prom
     throw new Error("No se pueden registrar movimientos en una caja ya cerrada");
   }
 
-  const amountDec = new Decimal(params.amount);
-  if (amountDec.isZero() || amountDec.isNegative()) {
-    throw new Error("El monto del movimiento debe ser un número positivo mayor que cero");
-  }
-
-  const amountStr = amountDec.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
+  const amountStr = amount.toFixed(2);
 
   // Retiros o Ingresos manuales exigen motivo
   if ((params.type === "RETIRO_MANUAL" || params.type === "INGRESO_MANUAL") && !params.reason?.trim()) {
@@ -251,7 +242,7 @@ export async function recordCashMovement(params: RecordCashMovementParams): Prom
   }
 
   // Si es un retiro manual que supera RD$ 1,000.00 exige autorización de supervisor
-  if (params.type === "RETIRO_MANUAL" && amountDec.greaterThan(1000) && !params.authorizedBy) {
+  if (params.type === "RETIRO_MANUAL" && amount.greaterThan(1000) && !params.authorizedBy) {
     throw new Error("Los retiros mayores a RD$ 1,000.00 requieren autorización de supervisor");
   }
 
@@ -260,10 +251,10 @@ export async function recordCashMovement(params: RecordCashMovementParams): Prom
   let newExpected: Decimal;
 
   if (params.type === "VENTA_EFECTIVO" || params.type === "ABONO_EFECTIVO" || params.type === "INGRESO_MANUAL") {
-    newExpected = currentExpected.plus(amountDec);
+    newExpected = currentExpected.plus(amount);
   } else {
     // RETIRO_MANUAL
-    newExpected = currentExpected.minus(amountDec);
+    newExpected = currentExpected.minus(amount);
     if (newExpected.isNegative()) {
       throw new Error(`Retiro denegado: el monto (RD$ ${amountStr}) supera el efectivo disponible en caja (RD$ ${session.expectedAmount})`);
     }
@@ -419,7 +410,7 @@ export async function closeCashSession(params: CloseSessionParams): Promise<Cash
       if (params.denominationCounts) {
         counted = new Decimal(calculateCountedCash(params.denominationCounts));
       } else if (params.countedAmount !== undefined) {
-        counted = new Decimal(params.countedAmount);
+        counted = validateAndParseAmount(params.countedAmount, true);
       } else {
         throw new Error("Debe ingresar el efectivo contado o el desglose de billetes/monedas");
       }
@@ -506,7 +497,7 @@ export async function closeCashSession(params: CloseSessionParams): Promise<Cash
   if (params.denominationCounts) {
     finalCounted = new Decimal(calculateCountedCash(params.denominationCounts));
   } else if (params.countedAmount !== undefined) {
-    finalCounted = new Decimal(params.countedAmount);
+    finalCounted = validateAndParseAmount(params.countedAmount, true);
   } else {
     throw new Error("Debe ingresar el efectivo contado o el desglose de billetes/monedas");
   }

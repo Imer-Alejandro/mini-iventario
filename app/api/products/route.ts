@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getStockAlerts } from "@/server/services/inventory.service";
+import { requirePermission } from "@/server/services/auth.service";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requirePermission(request, "INVENTARIO.LEER");
+  if (!auth.ok) return auth.response;
   const [products, categories, locations, stockByLocation] = await Promise.all([
     prisma.product.findMany({ orderBy: { createdAt: "desc" } }),
     prisma.category.findMany({ orderBy: { name: "asc" } }),
@@ -31,6 +34,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const auth = await requirePermission(request, "INVENTARIO.GESTIONAR");
+  if (!auth.ok) return auth.response;
   try {
     const body = await request.json();
     if (!body.name?.trim()) {
@@ -73,6 +78,8 @@ export async function POST(request: Request) {
 }
 
 export async function PUT(request: Request) {
+  const auth = await requirePermission(request, "INVENTARIO.GESTIONAR");
+  if (!auth.ok) return auth.response;
   try {
     const body = await request.json();
     const product = typeof body.id === "string"

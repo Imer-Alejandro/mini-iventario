@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { requirePermission } from "@/server/services/auth.service";
+import { validateAndParseAmount } from "@/lib/money";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requirePermission(request, "CLIENTES.LEER");
+  if (!auth.ok) return auth.response;
   const customers = await prisma.customer.findMany({
     include: { _count: { select: { ledger: true } } },
     orderBy: { createdAt: "desc" },
@@ -15,11 +19,14 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const auth = await requirePermission(request, "CLIENTES.GESTIONAR");
+  if (!auth.ok) return auth.response;
   try {
     const body = await request.json();
     if (typeof body.name !== "string" || !body.name.trim()) {
       return NextResponse.json({ error: "El nombre del cliente es obligatorio" }, { status: 400 });
     }
+    const creditLimit = validateAndParseAmount(String(body.creditLimit ?? "0.00"));
 
     const customer = await prisma.customer.create({
       data: {
@@ -27,7 +34,7 @@ export async function POST(request: Request) {
         documentId: body.documentId?.trim() || null,
         phone: body.phone?.trim() || null,
         address: body.address?.trim() || null,
-        creditLimit: String(body.creditLimit || "0.00"),
+        creditLimit: creditLimit.toFixed(2),
         status: body.status === "BLOCKED" ? "BLOCKED" : "ACTIVE",
       },
     });
@@ -44,6 +51,8 @@ export async function POST(request: Request) {
 }
 
 export async function PUT(request: Request) {
+  const auth = await requirePermission(request, "CLIENTES.GESTIONAR");
+  if (!auth.ok) return auth.response;
   try {
     const body = await request.json();
     const customer = typeof body.id === "string"
@@ -55,6 +64,7 @@ export async function PUT(request: Request) {
     if (typeof body.name !== "string" || !body.name.trim()) {
       return NextResponse.json({ error: "El nombre del cliente es obligatorio" }, { status: 400 });
     }
+    const creditLimit = validateAndParseAmount(String(body.creditLimit ?? customer.creditLimit));
 
     const updated = await prisma.customer.update({
       where: { id: customer.id },
@@ -63,7 +73,7 @@ export async function PUT(request: Request) {
         documentId: body.documentId?.trim() || null,
         phone: body.phone?.trim() || null,
         address: body.address?.trim() || null,
-        creditLimit: String(body.creditLimit ?? customer.creditLimit),
+        creditLimit: creditLimit.toFixed(2),
         status: body.status === "BLOCKED" ? "BLOCKED" : "ACTIVE",
       },
     });

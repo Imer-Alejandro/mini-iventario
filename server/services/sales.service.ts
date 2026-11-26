@@ -96,6 +96,43 @@ async function createPersistedSale(params: CreateSaleParams): Promise<SaleData> 
       }));
       const total = sumLineTotals(items.map((item) => item.lineTotal));
 
+      const locationRequirements = new Map<string, { productName: string; unit: string; quantity: Decimal }>();
+      for (const item of items) {
+        const locationId = item.locationId || DEFAULT_SALES_LOCATION_ID;
+        const key = `${item.product.id}:${locationId}`;
+        const current = locationRequirements.get(key);
+        locationRequirements.set(key, {
+          productName: item.product.name,
+          unit: item.product.unit,
+          quantity: (current?.quantity ?? new Decimal(0)).plus(item.quantity),
+        });
+      }
+      for (const [key, requirement] of locationRequirements) {
+        const [productId, locationId] = key.split(":");
+        const stock = await tx.stockByLocation.findUnique({
+          where: { productId_locationId: { productId, locationId } },
+        });
+        const available = new Decimal(stock?.quantity.toString() ?? "0");
+        if (requirement.quantity.greaterThan(available)) {
+          throw new Error(`Stock insuficiente en la ubicación para ${requirement.productName}. Disponible: ${available.toFixed(3)} ${requirement.unit}, solicitado: ${requirement.quantity.toFixed(3)} ${requirement.unit}`);
+        }
+      }
+      const productRequirements = new Map<string, { productName: string; unit: string; quantity: Decimal; available: Decimal }>();
+      for (const item of items) {
+        const current = productRequirements.get(item.product.id);
+        productRequirements.set(item.product.id, {
+          productName: item.product.name,
+          unit: item.product.unit,
+          quantity: (current?.quantity ?? new Decimal(0)).plus(item.quantity),
+          available: new Decimal(item.product.currentStock.toString()),
+        });
+      }
+      for (const requirement of productRequirements.values()) {
+        if (requirement.quantity.greaterThan(requirement.available)) {
+          throw new Error(`Stock insuficiente para ${requirement.productName}. Disponible: ${requirement.available.toFixed(3)} ${requirement.unit}, solicitado: ${requirement.quantity.toFixed(3)} ${requirement.unit}`);
+        }
+      }
+
       let customer: Awaited<ReturnType<typeof tx.customer.findUnique>> = null;
       if (params.paymentType === "CREDITO") {
         if (!params.customerId) throw new Error("Una venta a crédito requiere especificar un cliente registrado");
@@ -139,25 +176,29 @@ async function createPersistedSale(params: CreateSaleParams): Promise<SaleData> 
 
       for (const item of items) {
         const quantity = new Decimal(item.quantity);
-        const product = await tx.product.findUniqueOrThrow({ where: { id: item.product.id } });
-        await tx.product.update({
-          where: { id: product.id },
-          data: { currentStock: new Decimal(product.currentStock.toString()).minus(quantity).toFixed(3) },
+        const productStockUpdate = await tx.product.updateMany({
+          where: { id: item.product.id, currentStock: { gte: quantity } },
+          data: { currentStock: { decrement: quantity } },
         });
+        if (productStockUpdate.count === 0) {
+          throw new Error(`Stock insuficiente para ${item.product.name}`);
+        }
 
         const locationId = item.locationId || DEFAULT_SALES_LOCATION_ID;
-        const stock = await tx.stockByLocation.findUnique({
-          where: { productId_locationId: { productId: product.id, locationId } },
+        const locationStockUpdate = await tx.stockByLocation.updateMany({
+          where: {
+            productId: item.product.id,
+            locationId,
+            quantity: { gte: quantity },
+          },
+          data: { quantity: { decrement: quantity } },
         });
-        const stockQuantity = new Decimal(stock?.quantity.toString() ?? "0").minus(quantity);
-        await tx.stockByLocation.upsert({
-          where: { productId_locationId: { productId: product.id, locationId } },
-          create: { productId: product.id, locationId, quantity: stockQuantity.toFixed(3) },
-          update: { quantity: stockQuantity.toFixed(3) },
-        });
+        if (locationStockUpdate.count === 0) {
+          throw new Error(`Stock insuficiente en la ubicación para ${item.product.name}`);
+        }
         await tx.inventoryMovement.create({
           data: {
-            productId: product.id,
+            productId: item.product.id,
             fromLocationId: locationId,
             type: "SALIDA",
             quantity: item.quantity,
@@ -289,6 +330,39 @@ export async function createSale(params: CreateSaleParams): Promise<SaleData> {
   // total = Σ line_total (suma de líneas ya redondeadas)
   const totalAmount = sumLineTotals(lineTotalStrings);
 
+  const requestedByProduct = new Map<string, Decimal>();
+  const requestedByLocation = new Map<string, Decimal>();
+  for (const item of params.lines) {
+    const quantity = validateAndParseQty(item.quantity);
+    const locationId = item.locationId || DEFAULT_SALES_LOCATION_ID;
+    const locationKey = `${item.productId}:${locationId}`;
+    requestedByProduct.set(
+      item.productId,
+      (requestedByProduct.get(item.productId) || new Decimal(0)).plus(quantity),
+    );
+    requestedByLocation.set(
+      locationKey,
+      (requestedByLocation.get(locationKey) || new Decimal(0)).plus(quantity),
+    );
+  }
+  for (const [productId, requested] of requestedByProduct) {
+    const product = store.getProductById(productId);
+    if (!product) continue;
+    const available = new Decimal(product.currentStock);
+    if (requested.greaterThan(available)) {
+      throw new Error(`Stock insuficiente para ${product.name}. Disponible: ${available.toFixed(3)} ${product.unit}, solicitado: ${requested.toFixed(3)} ${product.unit}`);
+    }
+  }
+  for (const [key, requested] of requestedByLocation) {
+    const [productId, locationId] = key.split(":");
+    const product = store.getProductById(productId);
+    if (!product) continue;
+    const available = new Decimal(store.getStockByLocation(productId, locationId)?.quantity || "0");
+    if (requested.greaterThan(available)) {
+      throw new Error(`Stock insuficiente en la ubicación para ${product.name}. Disponible: ${available.toFixed(3)} ${product.unit}, solicitado: ${requested.toFixed(3)} ${product.unit}`);
+    }
+  }
+
   // 3. Validación de crédito si la venta es a crédito
   let customerName: string | undefined = undefined;
   if (params.paymentType === "CREDITO") {
@@ -342,7 +416,7 @@ export async function createSale(params: CreateSaleParams): Promise<SaleData> {
       referenceId: sale.id,
       reason: `Venta #${sale.number}`,
       userId: params.userId,
-      allowNegativeStock: true, // No frena la venta si hay desbalance transitorio
+      allowNegativeStock: false,
     });
   }
 

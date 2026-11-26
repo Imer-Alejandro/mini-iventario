@@ -6,6 +6,8 @@ import {
   calculateChange,
   calculateCountedCash,
   checkCreditAvailability,
+  sumQuantities,
+  validateAndParseAmount,
 } from "../index";
 import Decimal from "decimal.js";
 
@@ -37,6 +39,9 @@ function runTests() {
   const total = sumLineTotals([item1, item2]);
   assert("Total del ejemplo == '933.75'", total === "933.75", `Resultado: ${total}`);
 
+  const summedQuantity = sumQuantities(["0.001", "0.002"]);
+  assert("Suma exacta de pesos: 0.001 + 0.002 == '0.003'", summedQuantity === "0.003", `Resultado: ${summedQuantity}`);
+
   // 4. 0.1 + 0.2 (decimal) == 0.3
   const decSum = new Decimal("0.1").plus(new Decimal("0.2")).toString();
   assert("0.1 + 0.2 == '0.3'", decSum === "0.3", `Resultado: ${decSum}`);
@@ -48,6 +53,15 @@ function runTests() {
   // 6. 0.005 redondeado a 2 decimales == 0.01 (ROUND_HALF_UP)
   const roundHalfUp = new Decimal("0.005").toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
   assert("0.005 redondeado a 2 == '0.01'", roundHalfUp === "0.01", `Resultado: ${roundHalfUp}`);
+
+  let rejectedSubcentAmount = false;
+  try {
+    validateAndParseAmount("0.001");
+  } catch {
+    rejectedSubcentAmount = true;
+  }
+  assert("Importe con subcentavos '0.001' es rechazado", rejectedSubcentAmount);
+  assert("Importe monetario conserva los centavos exactos", validateAndParseAmount("12.34").toFixed(2) === "12.34");
 
   // 7. Cantidad '1.2756' (más de 3 decimales) -> Rechazada
   let rejectedExtraDecimals = false;

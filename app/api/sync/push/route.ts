@@ -3,6 +3,7 @@ import { createSale } from "@/server/services/sales.service";
 import { registerCustomerPayment } from "@/server/services/credit.service";
 import { recordCashMovement } from "@/server/services/cash.service";
 import { recordMerma } from "@/server/services/inventory.service";
+import { type PermissionCode, requirePermission } from "@/server/services/auth.service";
 
 export async function POST(request: Request) {
   try {
@@ -13,6 +14,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "clientOpId es obligatorio para idempotencia" }, { status: 400 });
     }
 
+    const requiredPermissions: Record<string, PermissionCode> = {
+      SALE: "VENTAS.CREAR",
+      CUSTOMER_PAYMENT: "CREDITO.COBRAR",
+      CASH_MOVEMENT: "CAJA.OPERAR",
+      MERMA: "INVENTARIO.GESTIONAR",
+    };
+    const requiredPermission = requiredPermissions[type];
+    if (!requiredPermission) {
+      return NextResponse.json({ error: `Tipo de operación desconocida: ${type}` }, { status: 400 });
+    }
+    const auth = await requirePermission(request, requiredPermission);
+    if (!auth.ok) return auth.response;
+
     let result: unknown;
 
     switch (type) {
@@ -20,6 +34,8 @@ export async function POST(request: Request) {
         result = await createSale({
           ...payload,
           clientOpId,
+          userId: auth.user.id,
+          authorizedBy: auth.user.permissions.includes("CREDITO.EXCEDER_LIMITE") ? auth.user.id : undefined,
         });
         break;
       }
@@ -28,6 +44,7 @@ export async function POST(request: Request) {
         result = await registerCustomerPayment({
           ...payload,
           clientOpId,
+          userId: auth.user.id,
         });
         break;
       }
@@ -36,6 +53,8 @@ export async function POST(request: Request) {
         result = await recordCashMovement({
           ...payload,
           clientOpId,
+          userId: auth.user.id,
+          authorizedBy: auth.user.permissions.includes("CAJA.AUTORIZAR_RETIROS") ? auth.user.id : undefined,
         });
         break;
       }
@@ -44,6 +63,7 @@ export async function POST(request: Request) {
         result = await recordMerma({
           ...payload,
           clientOpId,
+          userId: auth.user.id,
         });
         break;
       }

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Navbar } from "./components/Navbar";
+import { AuthGate } from "./components/AuthGate";
 
 export const metadata: Metadata = {
   title: "Korta Business — Sistema de Gestión para Carnicería",
@@ -28,10 +28,7 @@ export default function RootLayout({
         </div>
 
         {/* Layout principal */}
-        <div className="relative z-10 flex min-h-screen flex-col">
-          <Navbar />
-          <main className="min-h-screen flex-1 lg:pl-64">{children}</main>
-        </div>
+        <AuthGate>{children}</AuthGate>
       </body>
     </html>
   );

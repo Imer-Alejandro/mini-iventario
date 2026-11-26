@@ -6,8 +6,11 @@ import {
   closeCashSession,
   getCashSessionReport,
 } from "@/server/services/cash.service";
+import { requirePermission } from "@/server/services/auth.service";
 
 export async function GET(request: Request) {
+  const auth = await requirePermission(request, "CAJA.LEER");
+  if (!auth.ok) return auth.response;
   const { searchParams } = new URL(request.url);
   const sessionId = searchParams.get("sessionId");
 
@@ -43,14 +46,16 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const auth = await requirePermission(request, "CAJA.OPERAR");
+  if (!auth.ok) return auth.response;
   try {
     const body = await request.json();
     const { action } = body;
 
     if (action === "OPEN") {
       const session = await openCashSession({
-        userId: body.userId || "user-cajero-1",
-        userName: body.userName || "Claudette Colbert (Cajera Principal)",
+        userId: auth.user.id,
+        userName: auth.user.name,
         openingAmount: body.openingAmount || "5000.00",
       });
       return NextResponse.json(session, { status: 201 });
@@ -63,8 +68,8 @@ export async function POST(request: Request) {
         type: body.type,
         amount: body.amount,
         reason: body.reason,
-        userId: body.userId || "user-cajero-1",
-        authorizedBy: body.authorizedBy,
+        userId: auth.user.id,
+        authorizedBy: auth.user.permissions.includes("CAJA.AUTORIZAR_RETIROS") ? auth.user.id : undefined,
       });
       return NextResponse.json(mov, { status: 201 });
     }
@@ -75,7 +80,7 @@ export async function POST(request: Request) {
         countedAmount: body.countedAmount,
         denominationCounts: body.denominationCounts,
         diffReason: body.diffReason,
-        userId: body.userId || "user-cajero-1",
+        userId: auth.user.id,
       });
       return NextResponse.json(closed);
     }

@@ -29,6 +29,13 @@ This project uses [`next/font`](https://nextjs.org/docs/app/building-your-applic
 - Ejecuta `npm run db:backup` para una copia manual. En Windows, `npm run db:backup:install` registra la tarea diaria a las 02:00 para el usuario actual.
 - Para restaurar, detén la aplicación, conserva una copia del archivo actual y reemplázalo con la copia elegida antes de iniciar de nuevo.
 
+## Acceso, usuarios y permisos
+
+- En una instalación sin usuarios, abre la aplicación y crea la primera cuenta administradora desde la pantalla de configuración. Solo es posible completar este paso una vez.
+- El administrador puede crear usuarios, asignarles roles y definir permisos desde **Usuarios y roles**. Las contraseñas deben tener al menos 12 caracteres.
+- Las sesiones duran 12 horas y se almacenan en una cookie `HttpOnly`; las operaciones también verifican permisos en el servidor.
+- Para instalaciones ya existentes, ejecuta `npm run db:setup` para aplicar la migración de sesiones antes de iniciar la aplicación.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

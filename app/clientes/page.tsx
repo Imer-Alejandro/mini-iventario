@@ -10,7 +10,7 @@ import {
   X,
   Pencil,
 } from "lucide-react";
-import { formatCurrencyRD } from "@/lib/money";
+import { formatCurrencyRD, sumLineTotals, validateAndParseAmount } from "@/lib/money";
 
 interface Customer {
   id: string;
@@ -86,8 +86,10 @@ export default function ClientesPage() {
       setCustomerFormError("El nombre del cliente es obligatorio.");
       return;
     }
-    if (!customerForm.creditLimit || Number(customerForm.creditLimit) < 0) {
-      setCustomerFormError("El límite de crédito debe ser igual o mayor que cero.");
+    try {
+      validateAndParseAmount(customerForm.creditLimit);
+    } catch (error) {
+      setCustomerFormError(error instanceof Error ? error.message : "El límite de crédito debe tener máximo 2 decimales.");
       return;
     }
 
@@ -118,12 +120,14 @@ export default function ClientesPage() {
   const openCustomerStatement = async (cust: Customer) => {
     setSelectedCustomer(cust);
     setIsLoadingLedger(true);
+    setActionError(null);
     try {
       const res = await fetch(`/api/customers/${cust.id}/payments`);
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "No se pudo cargar el estado de cuenta.");
       if (data.ledger) setCustomerLedger(data.ledger);
-    } catch {
-      // fallo silencioso
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "No se pudo cargar el estado de cuenta.");
     } finally {
       setIsLoadingLedger(false);
     }
@@ -135,7 +139,7 @@ export default function ClientesPage() {
       setIsSubmitting(true);
       setActionError(null);
 
-      if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
+      if (validateAndParseAmount(paymentAmount).isZero()) {
         setActionError("El monto del abono debe ser mayor a cero");
         return;
       }
@@ -179,7 +183,7 @@ export default function ClientesPage() {
       (c.documentId && c.documentId.includes(searchQuery))
   );
 
-  const totalDebt = customers.reduce((acc, c) => acc + parseFloat(c.balance || "0"), 0);
+  const totalDebt = sumLineTotals(customers.map((customer) => customer.balance || "0"));
 
   return (
     <div className="max-w-7xl mx-auto p-4 sm:p-6 space-y-6">
@@ -201,7 +205,7 @@ export default function ClientesPage() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="bg-slate-50 border border-slate-200/80 px-5 py-3 rounded-2xl text-right">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Cartera Total por Cobrar</span>
-            <span className="text-xl font-black font-mono text-rose-700">{formatCurrencyRD(totalDebt.toFixed(2))}</span>
+            <span className="text-xl font-black font-mono text-rose-700">{formatCurrencyRD(totalDebt)}</span>
           </div>
           <button type="button" onClick={() => openCustomerForm()} className="inline-flex items-center gap-2 rounded-xl bg-[#176b5d] px-4 py-3 text-xs font-bold text-white transition hover:bg-[#12584d]">
             <Plus className="h-4 w-4" />
@@ -330,7 +334,7 @@ export default function ClientesPage() {
               </label>
               <label className="space-y-1.5 text-xs font-semibold text-slate-600">
                 Límite de crédito (RD$)
-                <input type="number" min="0" step="0.01" value={customerForm.creditLimit} onChange={(event) => setCustomerForm({ ...customerForm, creditLimit: event.target.value })} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-500" />
+                <input type="text" inputMode="decimal" value={customerForm.creditLimit} onChange={(event) => setCustomerForm({ ...customerForm, creditLimit: event.target.value })} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-500" />
               </label>
               <label className="space-y-1.5 text-xs font-semibold text-slate-600">
                 Estado
@@ -369,7 +373,7 @@ export default function ClientesPage() {
             </div>
 
             {/* Resumen de Deuda y Botón Abono */}
-            <div className="p-5 bg-gradient-to-r from-rose-50/80 via-white to-amber-50/60 border-b border-rose-100 flex items-center justify-between">
+            <div className="p-5 bg-gradient-to-r from-rose-50/80 via-white to-amber-50/60 border-b border-rose-100 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <span className="text-[10px] text-slate-500 uppercase font-black block mb-1">Deuda Actual</span>
                 <span className="text-3xl font-black font-mono text-rose-700">
@@ -380,17 +384,32 @@ export default function ClientesPage() {
                 </span>
               </div>
 
-              <button
-                onClick={() => {
-                  setActionError(null);
-                  setIsPaymentModalOpen(true);
-                }}
-                className="px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-md flex items-center gap-2 transition-colors"
-              >
-                <ArrowDownLeft className="w-4 h-4" />
-                REGISTRAR ABONO
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedCustomer(null);
+                    openCustomerForm(selectedCustomer);
+                  }}
+                  className="px-4 py-3 border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs rounded-xl flex items-center gap-2 transition-colors"
+                >
+                  <Pencil className="w-4 h-4" />
+                  EDITAR CLIENTE
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionError(null);
+                    setIsPaymentModalOpen(true);
+                  }}
+                  className="px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-md flex items-center gap-2 transition-colors"
+                >
+                  <ArrowDownLeft className="w-4 h-4" />
+                  REGISTRAR ABONO
+                </button>
+              </div>
             </div>
+            {actionError && <p role="alert" className="mx-5 mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</p>}
 
             {/* Libro Mayor Trazable */}
             <div className="p-5 overflow-y-auto space-y-3 flex-1">

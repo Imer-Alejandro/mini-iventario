@@ -1,6 +1,6 @@
 import Decimal from "decimal.js";
 import { store, CustomerData, CustomerLedgerData } from "./data-store";
-import { checkCreditAvailability } from "@/lib/money";
+import { checkCreditAvailability, validateAndParseAmount } from "@/lib/money";
 import { recordAudit } from "./audit.service";
 import { recordCashMovement } from "./cash.service";
 import { prisma } from "@/lib/db";
@@ -145,6 +145,7 @@ export async function recordCustomerLedgerMovement(params: {
   note?: string;
   userId: string;
 }): Promise<CustomerLedgerData> {
+  const amount = validateAndParseAmount(params.amount, true);
   if (process.env.NODE_ENV !== "test") {
     return prisma.$transaction(async (tx) => {
       if (params.clientOpId) {
@@ -161,7 +162,6 @@ export async function recordCustomerLedgerMovement(params: {
       }
       const customer = await tx.customer.findUnique({ where: { id: params.customerId } });
       if (!customer) throw new Error("Cliente no encontrado");
-      const amount = new Decimal(params.amount);
       const current = new Decimal(customer.balance.toString());
       const balance = params.type === "VENTA"
         ? current.plus(amount.abs())
@@ -173,7 +173,7 @@ export async function recordCustomerLedgerMovement(params: {
           customerId: customer.id,
           type: params.type,
           clientOpId: params.clientOpId,
-          amount: amount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2),
+          amount: amount.toFixed(2),
           referenceId: params.referenceId,
           note: params.note,
           userId: params.userId,
@@ -207,20 +207,19 @@ export async function recordCustomerLedgerMovement(params: {
     throw new Error("Cliente no encontrado");
   }
 
-  const amountDec = new Decimal(params.amount);
   const currentBalanceDec = new Decimal(customer.balance);
   let newBalanceDec: Decimal;
 
   switch (params.type) {
     case "VENTA":
-      newBalanceDec = currentBalanceDec.plus(amountDec.abs());
+      newBalanceDec = currentBalanceDec.plus(amount.abs());
       break;
     case "ABONO":
     case "ANULACION":
-      newBalanceDec = currentBalanceDec.minus(amountDec.abs());
+      newBalanceDec = currentBalanceDec.minus(amount.abs());
       break;
     case "AJUSTE":
-      newBalanceDec = currentBalanceDec.plus(amountDec);
+      newBalanceDec = currentBalanceDec.plus(amount);
       break;
   }
 
@@ -229,7 +228,7 @@ export async function recordCustomerLedgerMovement(params: {
   const entry = store.recordCustomerLedgerEntry({
     customerId: customer.id,
     type: params.type,
-    amount: amountDec.toFixed(2),
+    amount: amount.toFixed(2),
     referenceId: params.referenceId,
     note: params.note,
     userId: params.userId,
@@ -253,10 +252,10 @@ export async function recordCustomerLedgerMovement(params: {
  * Si el pago es en efectivo, impacta la caja registradora en la misma transacción lógica
  */
 export async function registerCustomerPayment(params: RecordCustomerPaymentParams) {
+  const payment = validateAndParseAmount(params.amount);
+  if (payment.isZero() || payment.isNegative()) throw new Error("El monto del abono debe ser mayor a cero");
+  const paymentStr = payment.toFixed(2);
   if (process.env.NODE_ENV !== "test") {
-    const payment = new Decimal(params.amount);
-    if (payment.isZero() || payment.isNegative()) throw new Error("El monto del abono debe ser mayor a cero");
-    const paymentStr = payment.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
     return prisma.$transaction(async (tx) => {
       if (params.clientOpId) {
         const existing = await tx.customerLedger.findUnique({ where: { clientOpId: params.clientOpId } });
@@ -281,6 +280,9 @@ export async function registerCustomerPayment(params: RecordCustomerPaymentParam
       }
       const customer = await tx.customer.findUnique({ where: { id: params.customerId } });
       if (!customer) throw new Error("Cliente no encontrado");
+      if (payment.greaterThan(customer.balance.toString())) {
+        throw new Error("El monto del abono no puede superar la deuda pendiente del cliente");
+      }
       const entry = await tx.customerLedger.create({
         data: {
           customerId: customer.id,
@@ -349,13 +351,9 @@ export async function registerCustomerPayment(params: RecordCustomerPaymentParam
   if (!customer) {
     throw new Error("Cliente no encontrado");
   }
-
-  const paymentDec = new Decimal(params.amount);
-  if (paymentDec.isZero() || paymentDec.isNegative()) {
-    throw new Error("El monto del abono debe ser mayor a cero");
+  if (payment.greaterThan(customer.balance)) {
+    throw new Error("El monto del abono no puede superar la deuda pendiente del cliente");
   }
-
-  const paymentStr = paymentDec.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
 
   // 1. Registrar movimiento en la cuenta corriente (- deuda)
   const ledgerEntry = await recordCustomerLedgerMovement({

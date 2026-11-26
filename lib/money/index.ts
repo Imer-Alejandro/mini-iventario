@@ -11,6 +11,19 @@ export const PRICE_RE = /^\d{1,11}(\.\d{1,4})?$/;
 
 // Expresión regular para importes: hasta 14 enteros y hasta 2 decimales
 export const AMOUNT_RE = /^\d{1,14}(\.\d{1,2})?$/;
+const SIGNED_AMOUNT_RE = /^-?\d{1,14}(\.\d{1,2})?$/;
+
+/**
+ * Valida un importe monetario DECIMAL(16,2), sin aceptar subcentavos.
+ */
+export function validateAndParseAmount(raw: string, allowsNegative = false): Decimal {
+  const trimmed = raw.trim();
+  const pattern = allowsNegative ? SIGNED_AMOUNT_RE : AMOUNT_RE;
+  if (!pattern.test(trimmed)) {
+    throw new Error(`Importe inválido "${raw}": debe usar punto (.) y máximo 2 decimales`);
+  }
+  return new Decimal(trimmed);
+}
 
 /**
  * Valida y normaliza una cantidad en string. Rechaza comas o formatos fuera de regla.
@@ -26,6 +39,14 @@ export function validateAndParseQty(raw: string, allowsDecimals = true): Decimal
     throw new Error(`Este producto no permite cantidades fraccionadas (debe ser entero)`);
   }
   return d;
+}
+
+export function sumQuantities(quantities: string[], allowsDecimals = true): string {
+  const total = quantities.reduce(
+    (sum, quantity) => sum.plus(validateAndParseQty(quantity, allowsDecimals)),
+    new Decimal(0),
+  );
+  return total.toFixed(3);
 }
 
 /**

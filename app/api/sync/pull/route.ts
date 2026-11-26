@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { requirePermission } from "@/server/services/auth.service";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const inventoryAuth = await requirePermission(request, "INVENTARIO.LEER");
+  if (!inventoryAuth.ok) return inventoryAuth.response;
+  const customerAuth = await requirePermission(request, "CLIENTES.LEER");
+  if (!customerAuth.ok) return customerAuth.response;
   const [storedProducts, storedCustomers] = await Promise.all([
     prisma.product.findMany(),
     prisma.customer.findMany(),

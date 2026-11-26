@@ -2,13 +2,15 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   Activity,
   BarChart3,
   LayoutDashboard,
+  LogOut,
   Package,
+  Truck,
   ShieldCheck,
   ShoppingCart,
   Users,
@@ -17,18 +19,29 @@ import {
   WifiOff,
 } from "lucide-react";
 
+interface NavbarUser {
+  id: string;
+  name: string;
+  email: string;
+  roleName: string;
+  permissions: string[];
+}
+
 const navLinks = [
-  { href: "/", label: "Inicio 360°", icon: LayoutDashboard },
-  { href: "/ventas", label: "Punto de Venta", icon: ShoppingCart },
-  { href: "/inventario", label: "Inventario & Cortes", icon: Package },
-  { href: "/clientes", label: "Clientes & Crédito", icon: Users },
-  { href: "/caja", label: "Caja & Cierres", icon: Wallet },
-  { href: "/reportes", label: "Reportes & Finanzas", icon: BarChart3 },
-  { href: "/auditoria", label: "Auditoría", icon: ShieldCheck },
+  { href: "/", label: "Inicio 360°", icon: LayoutDashboard, permission: "DASHBOARD.LEER" },
+  { href: "/ventas", label: "Punto de Venta", icon: ShoppingCart, permission: "VENTAS.LEER" },
+  { href: "/inventario", label: "Inventario & Cortes", icon: Package, permission: "INVENTARIO.LEER" },
+  { href: "/clientes", label: "Clientes & Crédito", icon: Users, permission: "CLIENTES.LEER" },
+  { href: "/proveedores", label: "Proveedores & Deudas", icon: Truck, permission: "PROVEEDORES.LEER" },
+  { href: "/caja", label: "Caja & Cierres", icon: Wallet, permission: "CAJA.LEER" },
+  { href: "/reportes", label: "Reportes & Finanzas", icon: BarChart3, permission: "REPORTES.LEER" },
+  { href: "/auditoria", label: "Auditoría", icon: ShieldCheck, permission: "AUDITORIA.LEER" },
+  { href: "/usuarios", label: "Usuarios y roles", icon: Users, permission: "USUARIOS.GESTIONAR" },
 ];
 
-export function Navbar() {
+export function Navbar({ user }: { user: NavbarUser }) {
   const pathname = usePathname();
+  const router = useRouter();
   const isOnline = useSyncExternalStore(
     (onStoreChange) => {
       window.addEventListener("online", onStoreChange);
@@ -42,6 +55,12 @@ export function Navbar() {
     () => true,
   );
   const [cashStatus, setCashStatus] = useState<{ active: boolean; sessionNumber?: number } | null>(null);
+  const visibleLinks = navLinks.filter(({ permission }) => user.permissions.includes(permission));
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.replace("/login");
+  }
 
   useEffect(() => {
     fetch("/api/cash")
@@ -77,7 +96,7 @@ export function Navbar() {
 
         {/* Enlaces de Navegación */}
         <nav className="flex-1 space-y-1">
-          {navLinks.map(({ href, label, icon: Icon }) => {
+          {visibleLinks.map(({ href, label, icon: Icon }) => {
             const active = isActive(href);
             return (
               <Link
@@ -131,15 +150,18 @@ export function Navbar() {
             </span>
           </div>
 
-          {/* Perfil Cajero Activo */}
+          {/* Perfil de la sesión */}
           <div className="flex items-center gap-3 rounded-2xl bg-white/70 border border-white/90 p-2.5 shadow-xs">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-[#0B192C] to-[#1E293B] text-xs font-bold text-white shadow-xs">
-              CC
+              {user.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-bold text-slate-800">Claudette C.</p>
-              <p className="text-[10px] text-slate-500 font-medium">Cajera Principal</p>
+              <p className="truncate text-xs font-bold text-slate-800">{user.name}</p>
+              <p className="truncate text-[10px] text-slate-500 font-medium">{user.roleName}</p>
             </div>
+            <button type="button" onClick={logout} title="Cerrar sesión" aria-label="Cerrar sesión" className="rounded-lg p-2 text-slate-500 hover:bg-rose-50 hover:text-rose-700">
+              <LogOut className="h-4 w-4" />
+            </button>
           </div>
         </div>
       </aside>
@@ -158,9 +180,12 @@ export function Navbar() {
             {isOnline ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
             {isOnline ? "En línea" : "Offline"}
           </div>
+          <button type="button" onClick={logout} aria-label="Cerrar sesión" className="rounded-lg p-2 text-slate-600 hover:bg-rose-50 hover:text-rose-700">
+            <LogOut className="h-4 w-4" />
+          </button>
         </div>
         <nav className="flex gap-1.5 overflow-x-auto border-t border-slate-100/80 px-3 py-2 scrollbar-none">
-          {navLinks.map(({ href, label, icon: Icon }) => (
+          {visibleLinks.map(({ href, label, icon: Icon }) => (
             <Link
               key={href}
               href={href}
