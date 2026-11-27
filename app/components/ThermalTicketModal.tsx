@@ -17,6 +17,7 @@ interface ThermalTicketModalProps {
     lines: Array<{
       productName: string;
       quantity: string;
+      unit?: string;
       unitPrice: string;
       lineTotal: string;
     }>;
@@ -34,6 +35,7 @@ export function ThermalTicketModal({ isOpen, onClose, sale }: ThermalTicketModal
     dateStyle: "short",
     timeStyle: "medium",
   });
+  const customerName = sale.customerName?.trim();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-[#0B192C]/40 backdrop-blur-md animate-in fade-in duration-200">
@@ -79,10 +81,12 @@ export function ThermalTicketModal({ isOpen, onClose, sale }: ThermalTicketModal
                 <span>FECHA:</span>
                 <span>{saleDate}</span>
               </div>
-              <div className="flex justify-between">
-                <span>CLIENTE:</span>
-                <span className="font-bold truncate max-w-[180px]">{sale.customerName || "MOSTRADOR"}</span>
-              </div>
+              {customerName && (
+                <div className="flex justify-between">
+                  <span>CLIENTE:</span>
+                  <span className="font-bold truncate max-w-[180px]">{customerName}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span>CONDICIÓN:</span>
                 <span className="font-bold text-emerald-800">{sale.paymentType}</span>
@@ -99,7 +103,10 @@ export function ThermalTicketModal({ isOpen, onClose, sale }: ThermalTicketModal
                 <div key={i} className="text-[11px]">
                   <div className="font-bold text-slate-900">{l.productName}</div>
                   <div className="flex justify-between text-slate-600 text-[10px]">
-                    <span>{l.quantity} kg × {formatCurrencyRD(l.unitPrice)}</span>
+                    <span>
+                      {l.quantity}{l.unit ? ` ${l.unit}` : ""} × {formatCurrencyRD(l.unitPrice)}
+                      {l.unit ? `/${l.unit}` : ""}
+                    </span>
                     <span className="font-bold text-slate-900">{formatCurrencyRD(l.lineTotal)}</span>
                   </div>
                 </div>

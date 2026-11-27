@@ -12,10 +12,13 @@ import {
   Pencil,
   MapPin,
   Check,
+  Trash2,
+  RotateCcw,
 } from "lucide-react";
 import { formatCurrencyRD } from "@/lib/money";
 import { DEFAULT_MEAT_ICON_ID, MeatBadge } from "@/lib/icons/meat-icons";
 import { MeatIconPicker, MeatIconPickerModal } from "@/app/components/MeatIconPicker";
+import { ArchiveConfirmModal } from "@/app/components/ArchiveConfirmModal";
 
 interface Product {
   id: string;
@@ -31,6 +34,7 @@ interface Product {
   currentStock: string;
   iconId?: string;
   autoPurchaseOrder: boolean;
+  status: "ACTIVE" | "INACTIVE";
 }
 
 interface StockAlert {
@@ -67,6 +71,10 @@ export default function InventarioPage() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [productError, setProductError] = useState<string | null>(null);
+  const [inventoryError, setInventoryError] = useState<string | null>(null);
+  const [archiveProduct, setArchiveProduct] = useState<Product | null>(null);
+  const [isArchivingProduct, setIsArchivingProduct] = useState(false);
+  const [archiveProductError, setArchiveProductError] = useState<string | null>(null);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
   const [productForm, setProductForm] = useState({
     code: "",
@@ -91,6 +99,9 @@ export default function InventarioPage() {
   const [editingLocationId, setEditingLocationId] = useState<string | null>(null);
   const [locationDraft, setLocationDraft] = useState("");
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [archiveLocation, setArchiveLocation] = useState<Location | null>(null);
+  const [isArchivingLocation, setIsArchivingLocation] = useState(false);
+  const [archiveLocationError, setArchiveLocationError] = useState<string | null>(null);
   const [isSavingLocation, setIsSavingLocation] = useState(false);
   const [iconAssignProduct, setIconAssignProduct] = useState<Product | null>(null);
   const [isSavingIcon, setIsSavingIcon] = useState(false);
@@ -109,21 +120,41 @@ export default function InventarioPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const fetchInventory = () => {
+  const fetchInventory = async () => {
+    try {
+      const response = await fetch("/api/products");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "No se pudo cargar el inventario.");
+      if (data.products) setProducts(data.products);
+      if (data.categories) setCategories(data.categories);
+      if (data.locations) setLocations(data.locations);
+      if (data.stockByLocation) setStockByLocation(data.stockByLocation);
+      if (data.alerts) setAlerts(data.alerts);
+      setInventoryError(null);
+    } catch (error) {
+      setInventoryError(error instanceof Error ? error.message : "No se pudo cargar el inventario.");
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
     fetch("/api/products")
-      .then((res) => res.json())
-      .then((data) => {
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "No se pudo cargar el inventario.");
+        if (!active) return;
         if (data.products) setProducts(data.products);
         if (data.categories) setCategories(data.categories);
         if (data.locations) setLocations(data.locations);
         if (data.stockByLocation) setStockByLocation(data.stockByLocation);
         if (data.alerts) setAlerts(data.alerts);
       })
-      .catch(() => {});
-  };
-
-  useEffect(() => {
-    fetchInventory();
+      .catch((error: unknown) => {
+        if (active) setInventoryError(error instanceof Error ? error.message : "No se pudo cargar el inventario.");
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const openProductForm = (product?: Product) => {
@@ -201,6 +232,46 @@ export default function InventarioPage() {
     } finally {
       setIsSavingIcon(false);
     }
+  };
+
+  const handleProductArchive = async (product: Product) => {
+    try {
+      setIsArchivingProduct(true);
+      setArchiveProductError(null);
+      const response = await fetch(
+        `/api/products?id=${encodeURIComponent(product.id)}`,
+        { method: "DELETE" },
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "No se pudo archivar el producto.");
+      setArchiveProduct(null);
+      fetchInventory();
+    } catch (error) {
+      setArchiveProductError(error instanceof Error ? error.message : "No se pudo archivar el producto.");
+    } finally {
+      setIsArchivingProduct(false);
+    }
+  };
+
+  const handleProductRestore = async (product: Product) => {
+    try {
+      setInventoryError(null);
+      const response = await fetch("/api/products", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...product, status: "ACTIVE" }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "No se pudo restaurar el producto.");
+      fetchInventory();
+    } catch (error) {
+      setInventoryError(error instanceof Error ? error.message : "No se pudo restaurar el producto.");
+    }
+  };
+
+  const requestProductArchive = (product: Product) => {
+    setArchiveProductError(null);
+    setArchiveProduct(product);
   };
 
   // Registrar Merma
@@ -314,7 +385,9 @@ export default function InventarioPage() {
   const activeLocations = locations.filter((location) => location.status === "ACTIVE");
   const visibleProducts = filteredProducts.filter(
     (product) =>
-      selectedLocationId === "ALL" || Number(getLocationStock(product.id, selectedLocationId)) > 0,
+      selectedLocationId === "ALL" ||
+      product.status === "INACTIVE" ||
+      Number(getLocationStock(product.id, selectedLocationId)) > 0,
   );
 
   const openTransferModal = () => {
@@ -370,21 +443,36 @@ export default function InventarioPage() {
     }
   };
 
-  const handleLocationStatusChange = async (location: Location) => {
-    const status = location.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+  const handleArchiveLocation = async (location: Location) => {
+    try {
+      setIsArchivingLocation(true);
+      setArchiveLocationError(null);
+      const response = await fetch(`/api/inventory/locations?id=${encodeURIComponent(location.id)}`, { method: "DELETE" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "No se pudo archivar la ubicación.");
+      setArchiveLocation(null);
+      if (selectedLocationId === location.id) setSelectedLocationId("ALL");
+      fetchInventory();
+    } catch (error) {
+      setArchiveLocationError(error instanceof Error ? error.message : "No se pudo archivar la ubicación.");
+    } finally {
+      setIsArchivingLocation(false);
+    }
+  };
+
+  const handleRestoreLocation = async (location: Location) => {
     try {
       setLocationError(null);
       const response = await fetch("/api/inventory/locations", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: location.id, name: location.name, status }),
+        body: JSON.stringify({ id: location.id, name: location.name, status: "ACTIVE" }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "No se pudo actualizar la ubicación.");
-      if (selectedLocationId === location.id && status === "INACTIVE") setSelectedLocationId("ALL");
+      if (!response.ok) throw new Error(result.error || "No se pudo restaurar la ubicación.");
       fetchInventory();
     } catch (error) {
-      setLocationError(error instanceof Error ? error.message : "No se pudo actualizar la ubicación.");
+      setLocationError(error instanceof Error ? error.message : "No se pudo restaurar la ubicación.");
     }
   };
 
@@ -448,6 +536,12 @@ export default function InventarioPage() {
             Registrar Merma / Desposte
           </button>
         </div>
+
+        {inventoryError && (
+          <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+            {inventoryError}
+          </p>
+        )}
       </div>
 
       {/* Tarjetas Resumen */}
@@ -592,13 +686,13 @@ export default function InventarioPage() {
                 <th className="py-2.5 px-3">Producto / Corte</th>
                 <th className="py-2.5 px-3">Costo Unit.</th>
                 <th className="py-2.5 px-3">Precio Venta</th>
+                <th className="py-2.5 px-3 text-right">
+                  {selectedLocationId === "ALL"
+                    ? "Existencia total"
+                    : `Existencia en ${locations.find((location) => location.id === selectedLocationId)?.name}`}
+                </th>
                 <th className="py-2.5 px-3">Mínimo</th>
                 <th className="py-2.5 px-3">Objetivo</th>
-                <th className="py-2.5 px-3 text-right">
-                  Stock {selectedLocationId === "ALL"
-                    ? "Total"
-                    : locations.find((location) => location.id === selectedLocationId)?.name}
-                </th>
                 <th className="py-2.5 px-3 text-right">Acciones</th>
               </tr>
             </thead>
@@ -638,13 +732,12 @@ export default function InventarioPage() {
                         <div>
                           <span className="block font-semibold text-slate-900">{p.name}</span>
                           <span className="text-[10px] text-slate-400">{categories.find((category) => category.id === p.categoryId)?.name || "Sin categoría"}</span>
+                          {p.status === "INACTIVE" && <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold text-slate-500">Archivado</span>}
                         </div>
                       </div>
                     </td>
                     <td className="py-2.5 px-3 font-mono text-slate-600">{formatCurrencyRD(p.cost)}</td>
                     <td className="py-2.5 px-3 font-mono font-bold text-emerald-700">{formatCurrencyRD(p.price)}</td>
-                    <td className="py-2.5 px-3 font-mono text-slate-500">{p.minStock} {p.unit}</td>
-                    <td className="py-2.5 px-3 font-mono text-slate-500">{p.targetStock} {p.unit}</td>
                     <td className="py-2.5 px-3 text-right">
                       <span className={`px-2 py-0.5 rounded-md font-mono font-bold text-xs ${
                         isLow ? "bg-rose-50 text-rose-700 border border-rose-200" : "bg-emerald-50 text-emerald-800"
@@ -652,16 +745,30 @@ export default function InventarioPage() {
                         {currentStock} {p.unit}
                       </span>
                     </td>
+                    <td className="py-2.5 px-3 font-mono text-slate-500">{p.minStock} {p.unit}</td>
+                    <td className="py-2.5 px-3 font-mono text-slate-500">{p.targetStock} {p.unit}</td>
                     <td className="py-2.5 px-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => openProductForm(p)}
-                        aria-label={`Editar ${p.name}`}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 font-semibold text-slate-600 transition hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-800"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        Editar
-                      </button>
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => openProductForm(p)}
+                          aria-label={`Editar ${p.name}`}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 font-semibold text-slate-600 transition hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-800"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => p.status === "ACTIVE" ? requestProductArchive(p) : void handleProductRestore(p)}
+                          aria-label={`${p.status === "ACTIVE" ? "Eliminar" : "Restaurar"} ${p.name}`}
+                          title={p.status === "ACTIVE" ? "Eliminar (archivar)" : "Restaurar producto"}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 font-semibold text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-800"
+                        >
+                          {p.status === "ACTIVE" ? <Trash2 className="h-3.5 w-3.5" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                          {p.status === "ACTIVE" ? "Eliminar" : "Restaurar"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -718,6 +825,15 @@ export default function InventarioPage() {
                 Costo (RD$)
                 <input type="number" min="0" step="0.01" value={productForm.cost} onChange={(event) => setProductForm({ ...productForm, cost: event.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-500" />
               </label>
+              <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2.5">
+                <span className="block text-xs font-semibold text-sky-900">Existencia actual total</span>
+                <span className="mt-1 block font-mono text-sm font-bold text-sky-950">
+                  {editingProduct?.currentStock ?? "0.000"} {productForm.unit}
+                </span>
+                <span className="mt-1 block text-[10px] text-sky-800">
+                  Se modifica con entradas, traslados o mermas; no editando el producto.
+                </span>
+              </div>
               <label className="space-y-1.5 text-xs font-semibold text-slate-600">
                 Stock mínimo
                 <input type="number" min="0" step="0.001" value={productForm.minStock} onChange={(event) => setProductForm({ ...productForm, minStock: event.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-500" />
@@ -756,6 +872,30 @@ export default function InventarioPage() {
           productName={iconAssignProduct.name}
           onClose={() => setIconAssignProduct(null)}
           onSelect={handleAssignIcon}
+        />
+      )}
+      {archiveProduct?.status === "ACTIVE" && (
+        <ArchiveConfirmModal
+          key={archiveProduct.id}
+          title="Archivar producto"
+          entityLabel="Producto"
+          entityName={`${archiveProduct.code} — ${archiveProduct.name}`}
+          description="El producto dejará de aparecer en el punto de venta. Su historial de ventas y movimientos se conservará; puedes restaurarlo después."
+          blockedReason={
+            Number(archiveProduct.currentStock) !== 0 ||
+            stockByLocation.some((stock) => stock.productId === archiveProduct.id && Number(stock.quantity) !== 0)
+              ? `No se puede archivar porque todavía tiene ${archiveProduct.currentStock} ${archiveProduct.unit} en existencia. Traslada o ajusta el stock antes de intentarlo de nuevo.`
+              : undefined
+          }
+          error={archiveProductError}
+          isSubmitting={isArchivingProduct}
+          onClose={() => {
+            if (!isArchivingProduct) {
+              setArchiveProduct(null);
+              setArchiveProductError(null);
+            }
+          }}
+          onConfirm={() => void handleProductArchive(archiveProduct)}
         />
       )}
       {isSavingIcon && (
@@ -851,7 +991,6 @@ export default function InventarioPage() {
                   const stockedProductCount = products.filter(
                     (product) => Number(getLocationStock(product.id, location.id)) !== 0,
                   ).length;
-                  const canDeactivate = location.status === "INACTIVE" || stockedProductCount === 0;
 
                   return (
                     <div
@@ -892,12 +1031,13 @@ export default function InventarioPage() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleLocationStatusChange(location)}
-                          disabled={!canDeactivate || isSavingLocation}
-                          title={!canDeactivate ? "Traslada las existencias antes de desactivar esta ubicación" : undefined}
+                          onClick={() => location.status === "ACTIVE"
+                            ? (setArchiveLocationError(null), setArchiveLocation(location))
+                            : void handleRestoreLocation(location)}
+                          disabled={isSavingLocation}
                           className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                          {location.status === "ACTIVE" ? "Desactivar" : "Activar"}
+                          {location.status === "ACTIVE" ? "Eliminar" : "Restaurar"}
                         </button>
                       </div>
                     </div>
@@ -906,11 +1046,37 @@ export default function InventarioPage() {
               </div>
 
               <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-[11px] leading-relaxed text-slate-500">
-                Las ubicaciones con existencias no pueden desactivarse. Las inactivas se conservan para respetar el historial de movimientos y no aparecen en los filtros ni en nuevos traslados.
+                Las ubicaciones con existencias no pueden archivarse. Las archivadas se conservan para respetar el historial de movimientos y no aparecen en los filtros ni en nuevos traslados.
               </p>
             </div>
           </section>
         </div>
+      )}
+
+      {archiveLocation?.status === "ACTIVE" && (
+        <ArchiveConfirmModal
+          key={archiveLocation.id}
+          title="Archivar ubicación"
+          entityLabel="Ubicación"
+          entityName={archiveLocation.name}
+          description="La ubicación se conservará en el historial, pero dejará de estar disponible para traslados y nuevos movimientos."
+          blockedReason={
+            archiveLocation.id === "loc-003"
+              ? "Esta es la ubicación predeterminada de ventas y no se puede archivar."
+              : products.some((product) => Number(getLocationStock(product.id, archiveLocation.id)) !== 0)
+                ? "Esta ubicación todavía tiene existencias. Trasládalas a otra ubicación antes de archivarla."
+                : undefined
+          }
+          error={archiveLocationError}
+          isSubmitting={isArchivingLocation}
+          onClose={() => {
+            if (!isArchivingLocation) {
+              setArchiveLocation(null);
+              setArchiveLocationError(null);
+            }
+          }}
+          onConfirm={() => void handleArchiveLocation(archiveLocation)}
+        />
       )}
 
       {/* MODAL REGISTRAR MERMA */}

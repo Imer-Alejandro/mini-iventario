@@ -1,8 +1,9 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { Building2, CreditCard, DollarSign, Pencil, Plus, Search, Truck, X } from "lucide-react";
+import { Building2, CreditCard, DollarSign, Pencil, Plus, Search, Truck, X, Trash2, RotateCcw } from "lucide-react";
 import { formatCurrencyRD, sumLineTotals, validateAndParseAmount } from "@/lib/money";
+import { ArchiveConfirmModal } from "@/app/components/ArchiveConfirmModal";
 
 interface Supplier {
   id: string;
@@ -55,6 +56,9 @@ export default function SuppliersPage() {
   const [movementType, setMovementType] = useState<"FACTURA" | "PAGO" | "AJUSTE">("FACTURA");
   const [cashSessionId, setCashSessionId] = useState("");
   const [editingId, setEditingId] = useState("");
+  const [archiveSupplierRecord, setArchiveSupplierRecord] = useState<Supplier | null>(null);
+  const [archiveSupplierError, setArchiveSupplierError] = useState<string | null>(null);
+  const [isArchivingSupplier, setIsArchivingSupplier] = useState(false);
   const [form, setForm] = useState({
     name: "", rnc: "", phone: "", address: "", contact: "", paymentTerms: "CONTADO", status: "ACTIVE",
   });
@@ -129,6 +133,41 @@ export default function SuppliersPage() {
       await loadSuppliers();
     } catch (saveError: unknown) {
       setError(saveError instanceof Error ? saveError.message : "No se pudo guardar el proveedor.");
+    }
+  }
+
+  async function archiveSupplier(supplier: Supplier) {
+    try {
+      setIsArchivingSupplier(true);
+      setArchiveSupplierError(null);
+      const response = await fetch(`/api/suppliers?id=${encodeURIComponent(supplier.id)}`, { method: "DELETE" });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "No se pudo archivar el proveedor.");
+      setArchiveSupplierRecord(null);
+      setNotice("Proveedor archivado.");
+      await loadSuppliers();
+    } catch (archiveError: unknown) {
+      setArchiveSupplierError(archiveError instanceof Error ? archiveError.message : "No se pudo archivar el proveedor.");
+    } finally {
+      setIsArchivingSupplier(false);
+    }
+  }
+
+  async function restoreSupplier(supplier: Supplier) {
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/suppliers", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...supplier, status: "ACTIVE" }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "No se pudo restaurar el proveedor.");
+      setNotice("Proveedor restaurado.");
+      await loadSuppliers();
+    } catch (restoreError: unknown) {
+      setError(restoreError instanceof Error ? restoreError.message : "No se pudo restaurar el proveedor.");
     }
   }
 
@@ -262,6 +301,17 @@ export default function SuppliersPage() {
                 <button type="button" onClick={() => openForm(supplier)} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">
                   <Pencil className="h-3.5 w-3.5" /> Editar
                 </button>
+                <button
+                  type="button"
+                  onClick={() => supplier.status === "INACTIVE"
+                    ? void restoreSupplier(supplier)
+                    : (setArchiveSupplierError(null), setArchiveSupplierRecord(supplier))}
+                  aria-label={`${supplier.status === "INACTIVE" ? "Restaurar" : "Eliminar"} ${supplier.name}`}
+                  title={supplier.status === "INACTIVE" ? "Restaurar proveedor" : "Eliminar (archivar)"}
+                  className="inline-flex items-center justify-center rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-800"
+                >
+                  {supplier.status === "INACTIVE" ? <RotateCcw className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
+                </button>
               </div>
             </article>
           ))}
@@ -348,6 +398,28 @@ export default function SuppliersPage() {
             </div>
           </form>
         </div>
+      )}
+
+      {archiveSupplierRecord && archiveSupplierRecord.status === "ACTIVE" && (
+        <ArchiveConfirmModal
+          key={archiveSupplierRecord.id}
+          title="Archivar proveedor"
+          entityLabel="Proveedor"
+          entityName={archiveSupplierRecord.name}
+          description="El proveedor dejará de estar disponible para nuevas operaciones. Su cuenta por pagar y el historial de movimientos se conservarán."
+          blockedReason={Number(archiveSupplierRecord.balance) !== 0
+            ? `No se puede archivar porque tiene un saldo pendiente de ${formatCurrencyRD(archiveSupplierRecord.balance)}. Liquida o ajusta el saldo antes de continuar.`
+            : undefined}
+          error={archiveSupplierError}
+          isSubmitting={isArchivingSupplier}
+          onClose={() => {
+            if (!isArchivingSupplier) {
+              setArchiveSupplierRecord(null);
+              setArchiveSupplierError(null);
+            }
+          }}
+          onConfirm={() => void archiveSupplier(archiveSupplierRecord)}
+        />
       )}
 
       {isMovementOpen && selected && (

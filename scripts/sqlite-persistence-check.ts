@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { prisma } from "../lib/db";
 import { recordCashMovement } from "../server/services/cash.service";
 import { registerCustomerPayment } from "../server/services/credit.service";
@@ -9,6 +11,42 @@ const operationId = process.env.SQLITE_TEST_RUN_ID;
 if (!operationId) throw new Error("SQLITE_TEST_RUN_ID es obligatorio.");
 
 async function writeOperations() {
+  await prisma.stockByLocation.deleteMany({ where: { productId: "prod-res-02" } });
+  const stockMigration = readFileSync(resolve(
+    process.cwd(),
+    "prisma",
+    "migrations",
+    "20261127100000_allocate_unassigned_stock",
+    "migration.sql",
+  ), "utf8");
+  const migrationStatements = stockMigration.split(";").map((part) => part.trim()).filter(Boolean);
+  for (const statement of migrationStatements) {
+    await prisma.$executeRawUnsafe(statement);
+  }
+  const reconciledStock = await prisma.stockByLocation.findUniqueOrThrow({
+    where: { productId_locationId: { productId: "prod-res-02", locationId: "loc-003" } },
+  });
+  assert.equal(reconciledStock.quantity.toFixed(3), "18.250");
+  assert.ok(await prisma.inventoryMovement.findUnique({ where: { id: "opening-stock-prod-res-02" } }));
+  for (const statement of migrationStatements) {
+    await prisma.$executeRawUnsafe(statement);
+  }
+  assert.equal(
+    (await prisma.stockByLocation.findUniqueOrThrow({
+      where: { productId_locationId: { productId: "prod-res-02", locationId: "loc-003" } },
+    })).quantity.toFixed(3),
+    "18.250",
+  );
+
+  const groundBeefSale = await createSale({
+    paymentType: "CONTADO",
+    paymentMethod: "TARJETA",
+    userId: "user-cajero-1",
+    clientOpId: `${operationId}-ground-beef-sale`,
+    lines: [{ productId: "prod-res-02", quantity: "1.000", unitPrice: "320.00", locationId: "loc-003" }],
+  });
+  assert.equal(groundBeefSale.total, "320.00");
+
   const saleParams = {
     paymentType: "CONTADO" as const,
     userId: "user-cajero-1",

@@ -94,7 +94,7 @@ export interface CustomerData {
   address?: string;
   creditLimit: string;
   balance: string; // Saldo deudor actual
-  status: "ACTIVE" | "BLOCKED";
+  status: "ACTIVE" | "BLOCKED" | "INACTIVE";
   createdAt: Date;
 }
 
@@ -317,12 +317,23 @@ export function createInitialState() {
 
   ];
 
-  const stockByLocations: StockByLocationData[] = [
+  const initialLocationStocks: StockByLocationData[] = [
     { productId: "prod-res-01", locationId: locCamaraFriaId, quantity: "15.750" },
     { productId: "prod-res-01", locationId: locCongeladorId, quantity: "8.250" },
     { productId: "prod-res-01", locationId: locMostradorId, quantity: "3.500" },
     { productId: "prod-pollo-01", locationId: locMostradorId, quantity: "20.000" },
     { productId: "prod-pollo-01", locationId: locCamaraFriaId, quantity: "22.000" },
+  ];
+  const productsWithLocationStock = new Set(initialLocationStocks.map((stock) => stock.productId));
+  const stockByLocations: StockByLocationData[] = [
+    ...initialLocationStocks,
+    ...products
+      .filter((product) => product.currentStock !== "0.000" && !productsWithLocationStock.has(product.id))
+      .map((product) => ({
+        productId: product.id,
+        locationId: locMostradorId,
+        quantity: product.currentStock,
+      })),
   ];
 
   const customers: CustomerData[] = [

@@ -14,19 +14,49 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const sessionId = searchParams.get("sessionId");
 
-  const session = sessionId
-    ? await prisma.cashSession.findUnique({ where: { id: sessionId } })
-    : await prisma.cashSession.findFirst({ where: { status: "OPEN" } });
+  const [session, allSessions] = await Promise.all([
+    sessionId
+      ? prisma.cashSession.findUnique({ where: { id: sessionId } })
+      : prisma.cashSession.findFirst({ where: { status: "OPEN" } }),
+    prisma.cashSession.findMany({
+      orderBy: { openedAt: "desc" },
+      take: 20,
+      select: {
+        id: true,
+        sessionNumber: true,
+        userName: true,
+        status: true,
+        openingAmount: true,
+        expectedAmount: true,
+        countedAmount: true,
+        difference: true,
+        openedAt: true,
+        closedAt: true,
+      },
+    }),
+  ]);
 
   if (!session) {
-    return NextResponse.json({ active: false, session: null });
+    return NextResponse.json({
+      active: false,
+      session: null,
+      report: null,
+      movements: [],
+      allSessions: allSessions.map((cashSession) => ({
+        ...cashSession,
+        openingAmount: cashSession.openingAmount.toFixed(2),
+        expectedAmount: cashSession.expectedAmount.toFixed(2),
+        countedAmount: cashSession.countedAmount?.toFixed(2) ?? null,
+        difference: cashSession.difference?.toFixed(2) ?? null,
+      })),
+    });
   }
 
   const report = await getCashSessionReport(session.id);
-  const [movements, allSessions] = await Promise.all([
-    prisma.cashMovement.findMany({ where: { cashSessionId: session.id }, orderBy: { createdAt: "desc" } }),
-    prisma.cashSession.findMany({ orderBy: { openedAt: "desc" } }),
-  ]);
+  const movements = await prisma.cashMovement.findMany({
+    where: { cashSessionId: session.id },
+    orderBy: { createdAt: "desc" },
+  });
 
   return NextResponse.json({
     active: session.status === "OPEN",

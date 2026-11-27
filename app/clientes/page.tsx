@@ -9,8 +9,11 @@ import {
   ArrowDownLeft,
   X,
   Pencil,
+  Trash2,
+  RotateCcw,
 } from "lucide-react";
 import { formatCurrencyRD, sumLineTotals, validateAndParseAmount } from "@/lib/money";
+import { ArchiveConfirmModal } from "@/app/components/ArchiveConfirmModal";
 
 interface Customer {
   id: string;
@@ -20,7 +23,7 @@ interface Customer {
   address?: string;
   creditLimit: string;
   balance: string;
-  status: "ACTIVE" | "BLOCKED";
+  status: "ACTIVE" | "BLOCKED" | "INACTIVE";
   ledgerCount?: number;
 }
 
@@ -49,22 +52,29 @@ export default function ClientesPage() {
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [isCustomerFormOpen, setIsCustomerFormOpen] = useState(false);
   const [customerFormError, setCustomerFormError] = useState<string | null>(null);
+  const [customerActionError, setCustomerActionError] = useState<string | null>(null);
+  const [archiveCustomer, setArchiveCustomer] = useState<Customer | null>(null);
+  const [isArchivingCustomer, setIsArchivingCustomer] = useState(false);
+  const [archiveCustomerError, setArchiveCustomerError] = useState<string | null>(null);
   const [customerForm, setCustomerForm] = useState({
     name: "",
     documentId: "",
     phone: "",
     address: "",
     creditLimit: "0",
-    status: "ACTIVE" as "ACTIVE" | "BLOCKED",
+    status: "ACTIVE" as Customer["status"],
   });
 
-  const fetchCustomers = () => {
-    fetch("/api/customers")
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data)) setCustomers(data);
-      })
-      .catch(() => {});
+  const fetchCustomers = async () => {
+    try {
+      const response = await fetch("/api/customers");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "No se pudieron cargar los clientes.");
+      if (Array.isArray(data)) setCustomers(data);
+      setCustomerActionError(null);
+    } catch (error) {
+      setCustomerActionError(error instanceof Error ? error.message : "No se pudieron cargar los clientes.");
+    }
   };
 
   const openCustomerForm = (customer?: Customer) => {
@@ -113,8 +123,52 @@ export default function ClientesPage() {
     }
   };
 
+  const handleCustomerArchive = async (customer: Customer) => {
+    try {
+      setIsArchivingCustomer(true);
+      setArchiveCustomerError(null);
+      const response = await fetch(`/api/customers?id=${encodeURIComponent(customer.id)}`, { method: "DELETE" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "No se pudo archivar el cliente.");
+      setArchiveCustomer(null);
+      fetchCustomers();
+    } catch (error) {
+      setArchiveCustomerError(error instanceof Error ? error.message : "No se pudo archivar el cliente.");
+    } finally {
+      setIsArchivingCustomer(false);
+    }
+  };
+
+  const handleCustomerRestore = async (customer: Customer) => {
+    try {
+      setCustomerActionError(null);
+      const response = await fetch("/api/customers", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...customer, status: "ACTIVE" }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "No se pudo restaurar el cliente.");
+      fetchCustomers();
+    } catch (error) {
+      setCustomerActionError(error instanceof Error ? error.message : "No se pudo restaurar el cliente.");
+    }
+  };
+
   useEffect(() => {
-    fetchCustomers();
+    let active = true;
+    fetch("/api/customers")
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "No se pudieron cargar los clientes.");
+        if (active && Array.isArray(data)) setCustomers(data);
+      })
+      .catch((error: unknown) => {
+        if (active) setCustomerActionError(error instanceof Error ? error.message : "No se pudieron cargar los clientes.");
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const openCustomerStatement = async (cust: Customer) => {
@@ -214,6 +268,8 @@ export default function ClientesPage() {
         </div>
       </div>
 
+      {customerActionError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{customerActionError}</p>}
+
       {/* Buscador */}
       <div className="relative">
         <Search className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
@@ -245,7 +301,7 @@ export default function ClientesPage() {
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                     cust.status === "ACTIVE" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-rose-50 text-rose-700"
                   }`}>
-                    {cust.status === "ACTIVE" ? "Activo" : "Bloqueado"}
+                    {cust.status === "ACTIVE" ? "Activo" : cust.status === "BLOCKED" ? "Bloqueado" : "Archivado"}
                   </span>
                 </div>
 
@@ -279,7 +335,7 @@ export default function ClientesPage() {
               </div>
 
               {/* Botón Ver Estado de Cuenta */}
-              <div className="mt-4 grid grid-cols-[auto_1fr] gap-2">
+              <div className="mt-4 grid grid-cols-[auto_1fr_auto] gap-2">
                 <button
                   type="button"
                   onClick={() => openCustomerForm(cust)}
@@ -296,6 +352,17 @@ export default function ClientesPage() {
                 >
                   <FileText className="h-3.5 w-3.5 text-emerald-300" />
                   Estado de cuenta / abono
+                </button>
+                <button
+                  type="button"
+                  onClick={() => cust.status === "INACTIVE"
+                    ? void handleCustomerRestore(cust)
+                    : (setArchiveCustomerError(null), setArchiveCustomer(cust))}
+                  aria-label={`${cust.status === "INACTIVE" ? "Restaurar" : "Eliminar"} ${cust.name}`}
+                  title={cust.status === "INACTIVE" ? "Restaurar cliente" : "Eliminar (archivar)"}
+                  className="inline-flex items-center justify-center rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-800"
+                >
+                  {cust.status === "INACTIVE" ? <RotateCcw className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
                 </button>
               </div>
             </div>
@@ -338,9 +405,10 @@ export default function ClientesPage() {
               </label>
               <label className="space-y-1.5 text-xs font-semibold text-slate-600">
                 Estado
-                <select value={customerForm.status} onChange={(event) => setCustomerForm({ ...customerForm, status: event.target.value as "ACTIVE" | "BLOCKED" })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-500">
+                <select value={customerForm.status} onChange={(event) => setCustomerForm({ ...customerForm, status: event.target.value as Customer["status"] })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-500">
                   <option value="ACTIVE">Activo</option>
                   <option value="BLOCKED">Bloqueado</option>
+                  {editingCustomer?.status === "INACTIVE" && <option value="INACTIVE">Archivado</option>}
                 </select>
               </label>
             </div>
@@ -350,6 +418,28 @@ export default function ClientesPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {archiveCustomer && archiveCustomer.status !== "INACTIVE" && (
+        <ArchiveConfirmModal
+          key={archiveCustomer.id}
+          title="Archivar cliente"
+          entityLabel="Cliente"
+          entityName={archiveCustomer.name}
+          description="El cliente ya no podrá seleccionarse en nuevas ventas. Su cuenta y su historial de movimientos se conservarán."
+          blockedReason={Number(archiveCustomer.balance) !== 0
+            ? `No se puede archivar porque tiene un saldo pendiente de ${formatCurrencyRD(archiveCustomer.balance)}. Registra el abono correspondiente antes de intentarlo de nuevo.`
+            : undefined}
+          error={archiveCustomerError}
+          isSubmitting={isArchivingCustomer}
+          onClose={() => {
+            if (!isArchivingCustomer) {
+              setArchiveCustomer(null);
+              setArchiveCustomerError(null);
+            }
+          }}
+          onConfirm={() => void handleCustomerArchive(archiveCustomer)}
+        />
       )}
 
       {/* MODAL: ESTADO DE CUENTA Y ABONOS */}

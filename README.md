@@ -34,7 +34,7 @@ This project uses [`next/font`](https://nextjs.org/docs/app/building-your-applic
 - En una instalación sin usuarios, abre la aplicación y crea la primera cuenta administradora desde la pantalla de configuración. Solo es posible completar este paso una vez.
 - El administrador puede crear usuarios, asignarles roles y definir permisos desde **Usuarios y roles**. Las contraseñas deben tener al menos 12 caracteres.
 - Las sesiones duran 12 horas y se almacenan en una cookie `HttpOnly`; las operaciones también verifican permisos en el servidor.
-- Para instalaciones ya existentes, ejecuta `npm run db:setup` para aplicar la migración de sesiones antes de iniciar la aplicación.
+- Para instalaciones ya existentes, ejecuta `npm run db:setup` antes de iniciar la aplicación. Además de aplicar migraciones pendientes, el ajuste de inventario asigna al mostrador únicamente los productos con stock total y sin ninguna existencia registrada por ubicación; registra esa asignación como movimiento de apertura. Haz una copia de seguridad antes de actualizar.
 
 ## Learn More
 

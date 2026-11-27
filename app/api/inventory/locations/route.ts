@@ -145,3 +145,70 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }
+
+export async function DELETE(request: Request) {
+  const auth = await requirePermission(request, "INVENTARIO.GESTIONAR");
+  if (!auth.ok) return auth.response;
+
+  const id = new URL(request.url).searchParams.get("id");
+  if (!id) return NextResponse.json({ error: "Indica la ubicación que deseas archivar." }, { status: 400 });
+
+  try {
+    if (process.env.NODE_ENV === "test") {
+      const location = store.getLocationById(id);
+      if (!location) return NextResponse.json({ error: "No se encontró la ubicación." }, { status: 404 });
+      if (location.id === DEFAULT_SALES_LOCATION_ID) {
+        return NextResponse.json({ error: "La ubicación predeterminada de ventas no se puede archivar." }, { status: 409 });
+      }
+      if (store.getStockByLocations().some(
+        (stock) => stock.locationId === id && !new Decimal(stock.quantity).isZero(),
+      )) {
+        return NextResponse.json(
+          { error: "Esta ubicación todavía tiene existencias. Trasládalas antes de archivarla." },
+          { status: 409 },
+        );
+      }
+      if (location.status === "INACTIVE") return NextResponse.json({ status: "INACTIVE" });
+      store.updateLocation(id, { status: "INACTIVE" });
+      return NextResponse.json({ status: "INACTIVE" });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const location = await tx.location.findUnique({ where: { id } });
+      if (!location) return { error: "No se encontró la ubicación.", statusCode: 404 };
+      if (location.id === DEFAULT_SALES_LOCATION_ID) {
+        return { error: "La ubicación predeterminada de ventas no se puede archivar.", statusCode: 409 };
+      }
+      if (location.status === "INACTIVE") return { status: "INACTIVE" };
+
+      const stocks = await tx.stockByLocation.findMany({ where: { locationId: id } });
+      if (stocks.some((stock) => !new Decimal(stock.quantity.toString()).isZero())) {
+        return {
+          error: "Esta ubicación todavía tiene existencias. Trasládalas antes de archivarla.",
+          statusCode: 409,
+        };
+      }
+
+      await tx.location.update({ where: { id }, data: { status: "INACTIVE" } });
+      await tx.auditLog.create({
+        data: {
+          userId: auth.user.id,
+          action: "DELETE",
+          entity: "LOCATION",
+          entityId: id,
+          beforeState: { name: location.name, status: location.status },
+          afterState: { status: "INACTIVE" },
+        },
+      });
+      return { status: "INACTIVE" };
+    });
+
+    if ("error" in result) {
+      return NextResponse.json({ error: result.error }, { status: result.statusCode });
+    }
+    return NextResponse.json(result);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "No se pudo archivar la ubicación.";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}

@@ -85,6 +85,7 @@ async function createPersistedSale(params: CreateSaleParams): Promise<SaleData> 
       const items = await Promise.all(params.lines.map(async (item) => {
         const product = await tx.product.findUnique({ where: { id: item.productId } });
         if (!product) throw new Error(`Producto no encontrado: ${item.productId}`);
+        if (product.status !== "ACTIVE") throw new Error(`El producto ${product.name} está inactivo.`);
         const price = item.unitPrice || product.price.toString();
         return {
           ...item,
@@ -114,7 +115,11 @@ async function createPersistedSale(params: CreateSaleParams): Promise<SaleData> 
         });
         const available = new Decimal(stock?.quantity.toString() ?? "0");
         if (requirement.quantity.greaterThan(available)) {
-          throw new Error(`Stock insuficiente en la ubicación para ${requirement.productName}. Disponible: ${available.toFixed(3)} ${requirement.unit}, solicitado: ${requirement.quantity.toFixed(3)} ${requirement.unit}`);
+          const location = await tx.location.findUnique({
+            where: { id: locationId },
+            select: { name: true },
+          });
+          throw new Error(`Stock insuficiente en ${location?.name || "la ubicación de venta"} para ${requirement.productName}. Disponible: ${available.toFixed(3)} ${requirement.unit}, solicitado: ${requirement.quantity.toFixed(3)} ${requirement.unit}. Traslada existencias a esta ubicación antes de cobrar.`);
         }
       }
       const productRequirements = new Map<string, { productName: string; unit: string; quantity: Decimal; available: Decimal }>();
@@ -138,6 +143,7 @@ async function createPersistedSale(params: CreateSaleParams): Promise<SaleData> 
         if (!params.customerId) throw new Error("Una venta a crédito requiere especificar un cliente registrado");
         customer = await tx.customer.findUnique({ where: { id: params.customerId } });
         if (!customer) throw new Error("Cliente no encontrado para venta a crédito");
+        if (customer.status === "INACTIVE") throw new Error("El cliente está inactivo y no puede realizar compras.");
         const check = checkCreditAvailability(customer.balance.toString(), customer.creditLimit.toString(), total);
         if ((customer.status === "BLOCKED" || !check.allowed) && !params.authorizedBy) {
           throw new Error(customer.status === "BLOCKED"
@@ -146,6 +152,7 @@ async function createPersistedSale(params: CreateSaleParams): Promise<SaleData> 
         }
       } else if (params.customerId) {
         customer = await tx.customer.findUnique({ where: { id: params.customerId } });
+        if (customer?.status === "INACTIVE") throw new Error("El cliente está inactivo y no puede realizar compras.");
       }
 
       const counter = await tx.counter.upsert({
@@ -310,6 +317,7 @@ export async function createSale(params: CreateSaleParams): Promise<SaleData> {
     if (!product) {
       throw new Error(`Producto no encontrado: ${item.productId}`);
     }
+    if (product.status !== "ACTIVE") throw new Error(`El producto ${product.name} está inactivo.`);
 
     const price = item.unitPrice || product.price;
     const lineTotal = calculateLineTotal(item.quantity, price, product.allowsDecimals);
@@ -329,6 +337,11 @@ export async function createSale(params: CreateSaleParams): Promise<SaleData> {
 
   // total = Σ line_total (suma de líneas ya redondeadas)
   const totalAmount = sumLineTotals(lineTotalStrings);
+
+  if (params.customerId) {
+    const customer = store.getCustomerById(params.customerId);
+    if (customer?.status === "INACTIVE") throw new Error("El cliente está inactivo y no puede realizar compras.");
+  }
 
   const requestedByProduct = new Map<string, Decimal>();
   const requestedByLocation = new Map<string, Decimal>();
@@ -359,7 +372,8 @@ export async function createSale(params: CreateSaleParams): Promise<SaleData> {
     if (!product) continue;
     const available = new Decimal(store.getStockByLocation(productId, locationId)?.quantity || "0");
     if (requested.greaterThan(available)) {
-      throw new Error(`Stock insuficiente en la ubicación para ${product.name}. Disponible: ${available.toFixed(3)} ${product.unit}, solicitado: ${requested.toFixed(3)} ${product.unit}`);
+      const locationName = store.getLocationById(locationId)?.name || "la ubicación de venta";
+      throw new Error(`Stock insuficiente en ${locationName} para ${product.name}. Disponible: ${available.toFixed(3)} ${product.unit}, solicitado: ${requested.toFixed(3)} ${product.unit}. Traslada existencias a esta ubicación antes de cobrar.`);
     }
   }
 

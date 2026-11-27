@@ -75,6 +75,9 @@ async function recordPersistedInventoryMovement(
 
     const product = await tx.product.findUnique({ where: { id: params.productId } });
     if (!product) throw new Error(`Producto no encontrado: ${params.productId}`);
+    if (product.status !== "ACTIVE" && params.referenceType !== "VOID") {
+      throw new Error(`El producto ${product.name} está inactivo.`);
+    }
 
     const quantity = validateAndParseQty(params.quantity, product.allowsDecimals);
     if (quantity.isZero() || quantity.isNegative()) {
@@ -228,6 +231,9 @@ export async function recordInventoryMovement(params: RecordMovementParams): Pro
   const product = store.getProductById(params.productId);
   if (!product) {
     throw new Error(`Producto no encontrado: ${params.productId}`);
+  }
+  if (product.status !== "ACTIVE" && params.referenceType !== "VOID") {
+    throw new Error(`El producto ${product.name} está inactivo.`);
   }
 
   if (params.type === "TRASLADO") {

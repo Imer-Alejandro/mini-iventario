@@ -356,6 +356,7 @@ model Role {
   id          String           @id @default(cuid())
   name        String           @unique
   description String?
+  status      String           @default("ACTIVE")
   users       User[]
   permissions RolePermission[]
 

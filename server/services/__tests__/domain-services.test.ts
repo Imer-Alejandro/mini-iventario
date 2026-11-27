@@ -4,7 +4,7 @@ import { createSale, voidSale } from "../sales.service";
 import { checkCustomerCredit, registerCustomerPayment, getCustomerAging } from "../credit.service";
 import { recordInventoryMovement, recordMerma, getStockAlerts } from "../inventory.service";
 import { recordSupplierLedgerMovement } from "../supplier.service";
-import { POST as createLocation, PUT as updateLocation } from "@/app/api/inventory/locations/route";
+import { DELETE as archiveLocation, POST as createLocation, PUT as updateLocation } from "@/app/api/inventory/locations/route";
 import Decimal from "decimal.js";
 
 async function runDomainServiceTests() {
@@ -133,12 +133,53 @@ async function runDomainServiceTests() {
       store.getSales().length === salesBeforeOversell,
   );
 
+  store.updateProduct("prod-res-01", { status: "INACTIVE" });
+  let inactiveProductRejected = false;
+  let inactiveProductMovementRejected = false;
+  try {
+    await createSale({
+      paymentType: "CONTADO",
+      userId: "user-cajero-1",
+      lines: [{ productId: "prod-res-01", quantity: "0.001" }],
+    });
+  } catch {
+    inactiveProductRejected = true;
+  }
+  try {
+    await recordInventoryMovement({
+      productId: "prod-res-01",
+      type: "ENTRADA",
+      quantity: "1.000",
+      userId: "user-cajero-1",
+    });
+  } catch {
+    inactiveProductMovementRejected = true;
+  }
+  store.updateProduct("prod-res-01", { status: "ACTIVE" });
+  assert("Los productos archivados no pueden venderse ni recibir movimientos manuales", inactiveProductRejected && inactiveProductMovementRejected);
+
   // -------------------------------------------------------------
   // TEST 4: Cuenta Corriente, Crédito y Abonos
   // -------------------------------------------------------------
   console.log("\n[GRUPO 4: CRÉDITO Y CUENTA CORRIENTE]");
   const customer = store.getCustomerById("cust-001")!; // Saldo previo: 4250.00, Límite: 25000.00
   const initialCustomerBalance = customer.balance;
+
+  customer.status = "INACTIVE";
+  store.setStockByLocation("prod-res-01", "loc-003", "100.000");
+  let inactiveCustomerRejected = false;
+  try {
+    await createSale({
+      customerId: customer.id,
+      paymentType: "CONTADO",
+      userId: "user-cajero-1",
+      lines: [{ productId: "prod-res-01", quantity: "0.001" }],
+    });
+  } catch {
+    inactiveCustomerRejected = true;
+  }
+  customer.status = "ACTIVE";
+  assert("Los clientes archivados no pueden realizar compras", inactiveCustomerRejected);
 
   let subcentPaymentRejected = false;
   try {
@@ -335,6 +376,20 @@ async function runDomainServiceTests() {
   // -------------------------------------------------------------
   console.log("\n[GRUPO 9: GESTIÓN DE UBICACIONES]");
   store.reset();
+  const groundBeefStock = store.getStockByLocation("prod-res-02", "loc-003");
+  assert("Carne molida inicia con stock asignado al mostrador", groundBeefStock?.quantity === "18.250");
+  const groundBeefSale = await createSale({
+    paymentType: "CONTADO",
+    paymentMethod: "TARJETA",
+    userId: "user-cajero-1",
+    lines: [{ productId: "prod-res-02", quantity: "1.000", unitPrice: "320.00", locationId: "loc-003" }],
+  });
+  assert(
+    "Venta de 1.000 kg de carne molida descuenta stock total y del mostrador",
+    groundBeefSale.status === "CONFIRMED"
+      && store.getStockByLocation("prod-res-02", "loc-003")?.quantity === "17.250"
+      && store.getProductById("prod-res-02")?.currentStock === "17.250",
+  );
   const unauthenticatedLocationResponse = await createLocation(
     new Request("http://localhost/api/inventory/locations", { method: "POST" }),
   );
@@ -350,6 +405,11 @@ async function runDomainServiceTests() {
       method: "PUT",
       headers: { "Content-Type": "application/json", "x-test-auth": process.env.TEST_AUTH_TOKEN ?? "" },
       body: JSON.stringify(body),
+    });
+  const deleteLocationRequest = (id: string) =>
+    new Request(`http://localhost/api/inventory/locations?id=${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { "x-test-auth": process.env.TEST_AUTH_TOKEN ?? "" },
     });
 
   const createdLocationResponse = await createLocation(createLocationRequest("Depósito auxiliar"));
@@ -374,10 +434,23 @@ async function runDomainServiceTests() {
   );
   assert("Mantiene activa la ubicación predeterminada de ventas", salesLocationResponse.status === 409);
 
+  const archiveStockedLocationResponse = await archiveLocation(deleteLocationRequest("loc-001"));
+  assert("Impide archivar una ubicación con existencias", archiveStockedLocationResponse.status === 409);
+
+  const archiveSalesLocationResponse = await archiveLocation(deleteLocationRequest("loc-003"));
+  assert("Impide archivar la ubicación predeterminada de ventas", archiveSalesLocationResponse.status === 409);
+
   const deactivateEmptyLocationResponse = await updateLocation(
     updateLocationRequest({ id: createdLocation.id, name: "Depósito trasero", status: "INACTIVE" }),
   );
   assert("Permite desactivar una ubicación vacía", deactivateEmptyLocationResponse.status === 200);
+
+  const restoreEmptyLocationResponse = await updateLocation(
+    updateLocationRequest({ id: createdLocation.id, name: "Depósito trasero", status: "ACTIVE" }),
+  );
+  assert("Permite reactivar una ubicación archivada", restoreEmptyLocationResponse.status === 200);
+  const archiveEmptyLocationResponse = await archiveLocation(deleteLocationRequest(createdLocation.id));
+  assert("Archiva una ubicación vacía mediante DELETE sin eliminar su historial", archiveEmptyLocationResponse.status === 200);
 
   let inactiveTransferRejected = false;
   try {

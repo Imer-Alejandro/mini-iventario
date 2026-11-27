@@ -21,11 +21,16 @@ export async function GET(request: Request) {
   const auth = await requirePermission(request, "USUARIOS.GESTIONAR");
   if (!auth.ok) return auth.response;
 
-  const [users, roles] = await Promise.all([
+  const [users, roles, roleStatuses] = await Promise.all([
     prisma.user.findMany({ select: userSelection, orderBy: { createdAt: "desc" } }),
     prisma.role.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.$queryRaw<Array<{ id: string; status: string }>>`SELECT id, status FROM roles`,
   ]);
-  return NextResponse.json({ users, roles });
+  const statusesById = new Map(roleStatuses.map(({ id, status }) => [id, status]));
+  return NextResponse.json({
+    users,
+    roles: roles.map(({ id, name }) => ({ id, name, status: statusesById.get(id) ?? "INACTIVE" })),
+  });
 }
 
 export async function POST(request: Request) {
@@ -44,8 +49,13 @@ export async function POST(request: Request) {
       );
     }
 
-    const role = await prisma.role.findUnique({ where: { id: roleId } });
-    if (!role) return NextResponse.json({ error: "El rol seleccionado no existe." }, { status: 400 });
+    const [role, roleStatus] = await Promise.all([
+      prisma.role.findUnique({ where: { id: roleId } }),
+      prisma.$queryRaw<Array<{ status: string }>>`SELECT status FROM roles WHERE id = ${roleId}`,
+    ]);
+    if (!role || roleStatus[0]?.status !== "ACTIVE") {
+      return NextResponse.json({ error: "El rol seleccionado no existe o está inactivo." }, { status: 400 });
+    }
     const passwordHash = await hashPassword(password);
     const user = await prisma.user.create({
       data: { name, email, passwordHash, pinHash: passwordHash, roleId },
@@ -85,11 +95,17 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "No puedes cambiar tu propio rol ni desactivar tu usuario." }, { status: 409 });
     }
 
-    const role = await prisma.role.findUnique({
-      where: { id: roleId },
-      include: { permissions: { include: { permission: true } } },
-    });
+    const [role, roleStatus] = await Promise.all([
+      prisma.role.findUnique({
+        where: { id: roleId },
+        include: { permissions: { include: { permission: true } } },
+      }),
+      prisma.$queryRaw<Array<{ status: string }>>`SELECT status FROM roles WHERE id = ${roleId}`,
+    ]);
     if (!role) return NextResponse.json({ error: "El rol seleccionado no existe." }, { status: 400 });
+    if (roleStatus[0]?.status !== "ACTIVE" && (roleId !== existing.roleId || status === "ACTIVE")) {
+      return NextResponse.json({ error: "No puedes asignar ni reactivar usuarios con un rol inactivo." }, { status: 409 });
+    }
     const wasManager = existing.status === "ACTIVE" &&
       existing.role.permissions.some(({ permission }) => permission.code === "USUARIOS.GESTIONAR");
     const remainsManager = status === "ACTIVE" &&

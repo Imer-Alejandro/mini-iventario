@@ -39,6 +39,7 @@ export async function checkCustomerCredit(
   if (process.env.NODE_ENV !== "test") {
     const customer = await prisma.customer.findUnique({ where: { id: customerId } });
     if (!customer) throw new Error("Cliente no encontrado");
+    if (customer.status === "INACTIVE") throw new Error("El cliente está inactivo y no puede realizar compras.");
     const balance = customer.balance.toFixed(2);
     const creditLimit = customer.creditLimit.toFixed(2);
     if (customer.status === "BLOCKED") {
@@ -87,6 +88,7 @@ export async function checkCustomerCredit(
   if (!customer) {
     throw new Error("Cliente no encontrado");
   }
+  if (customer.status === "INACTIVE") throw new Error("El cliente está inactivo y no puede realizar compras.");
 
   if (customer.status === "BLOCKED") {
     return {

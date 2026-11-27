@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Decimal from "decimal.js";
 import {
   Wallet,
   ArrowDownRight,
@@ -11,12 +12,14 @@ import {
   CheckCircle2,
   Calendar,
   Clock,
-  Printer,
   Coins,
-  Receipt,
-  FileSpreadsheet,
 } from "lucide-react";
-import { formatCurrencyRD, DOP_DENOMINATIONS, calculateCountedCash } from "@/lib/money";
+import {
+  formatCurrencyRD,
+  DOP_DENOMINATIONS,
+  calculateCountedCash,
+  validateAndParseAmount,
+} from "@/lib/money";
 
 interface CashMovement {
   id: string;
@@ -45,11 +48,34 @@ interface CashReport {
   isBalanced: boolean;
 }
 
+interface CashSessionSummary {
+  id: string;
+  sessionNumber: number;
+  userName: string;
+  status: "OPEN" | "CLOSED";
+  openingAmount: string;
+  expectedAmount: string;
+  countedAmount: string | null;
+  difference: string | null;
+  openedAt: string;
+  closedAt: string | null;
+}
+
+const MOVEMENT_LABELS: Record<string, string> = {
+  VENTA_EFECTIVO: "Venta en efectivo",
+  ABONO_EFECTIVO: "Abono de cliente",
+  INGRESO_MANUAL: "Ingreso manual",
+  RETIRO_MANUAL: "Retiro manual",
+};
+
 export default function CashPage() {
   const [report, setReport] = useState<CashReport | null>(null);
   const [movements, setMovements] = useState<CashMovement[]>([]);
+  const [sessions, setSessions] = useState<CashSessionSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // Modales
   const [isOpeningModalOpen, setIsOpeningModalOpen] = useState(false);
@@ -69,42 +95,31 @@ export default function CashPage() {
   const [diffReason, setDiffReason] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const fetchCashData = async () => {
-    try {
-      setIsLoading(true);
-      setLoadError(null);
-      const res = await fetch("/api/cash");
-      const data = await res.json() as {
-        report?: CashReport;
-        movements?: CashMovement[];
-      };
-      if (!res.ok) throw new Error("No se pudieron cargar los datos de caja.");
-      if (data.report) setReport(data.report);
-      if (data.movements) setMovements(data.movements);
-    } catch (error: unknown) {
-      setLoadError(error instanceof Error ? error.message : "No se pudieron cargar los datos de caja.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   useEffect(() => {
     let cancelled = false;
     fetch("/api/cash")
       .then(async (response) => {
         if (!response.ok) throw new Error("No se pudieron cargar los datos de caja.");
         return await response.json() as {
-          report?: CashReport;
+          report?: CashReport | null;
           movements?: CashMovement[];
+          allSessions?: CashSessionSummary[];
         };
       })
       .then((data) => {
         if (cancelled) return;
-        if (data.report) setReport(data.report);
-        if (data.movements) setMovements(data.movements);
+        setReport(data.report ?? null);
+        setMovements(data.movements ?? []);
+        setSessions(data.allSessions ?? []);
+        setLoadError(null);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setLoadError(error instanceof Error ? error.message : "No se pudieron cargar los datos de caja.");
+        if (!cancelled) {
+          setReport(null);
+          setMovements([]);
+          setSessions([]);
+          setLoadError(error instanceof Error ? error.message : "No se pudieron cargar los datos de caja.");
+        }
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -113,25 +128,34 @@ export default function CashPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshKey]);
+
+  const refreshCashData = () => {
+    setIsLoading(true);
+    setLoadError(null);
+    setRefreshKey((current) => current + 1);
+  };
 
   // Total físico calculado por billetes y monedas
   const countedFromDenominations = calculateCountedCash(denominationCounts);
-  const expectedDecimal = report ? parseFloat(report.expectedAmount) : 0;
-  const countedDecimal = parseFloat(countedFromDenominations || "0");
-  const differenceDecimal = countedDecimal - expectedDecimal;
+  const expectedDecimal = new Decimal(report?.expectedAmount ?? "0");
+  const countedDecimal = new Decimal(countedFromDenominations || "0");
+  const differenceDecimal = countedDecimal.minus(expectedDecimal);
 
   // Apertura de caja
   const handleOpenCash = async () => {
+    if (isSubmitting) return;
     try {
+      setIsSubmitting(true);
       setActionError(null);
+      const openingAmount = validateAndParseAmount(openingInput);
+      if (openingAmount.isNegative()) throw new Error("El fondo de apertura no puede ser negativo.");
       const res = await fetch("/api/cash", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "OPEN",
-          openingAmount: openingInput,
-          userName: "Claudette Colbert (Cajera Principal)",
+          openingAmount: openingAmount.toFixed(2),
         }),
       });
 
@@ -141,17 +165,22 @@ export default function CashPage() {
       }
 
       setIsOpeningModalOpen(false);
-      fetchCashData();
+      refreshCashData();
     } catch (error: unknown) {
       setActionError(error instanceof Error ? error.message : "Error al abrir la caja.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   // Movimiento manual (retiro / ingreso)
   const handleSaveMovement = async () => {
+    if (isSubmitting) return;
     try {
+      setIsSubmitting(true);
       setActionError(null);
-      if (!movAmount || parseFloat(movAmount) <= 0) {
+      const amount = validateAndParseAmount(movAmount);
+      if (!amount.isPositive()) {
         setActionError("El monto debe ser mayor que cero");
         return;
       }
@@ -167,9 +196,8 @@ export default function CashPage() {
           action: "MOVEMENT",
           cashSessionId: report?.sessionId,
           type: movementType,
-          amount: movAmount,
+          amount: amount.toFixed(2),
           reason: movReason,
-          authorizedBy: parseFloat(movAmount) > 1000 ? "user-supervisor-1" : undefined,
         }),
       });
 
@@ -181,17 +209,21 @@ export default function CashPage() {
       setIsMovementModalOpen(false);
       setMovAmount("");
       setMovReason("");
-      fetchCashData();
+      refreshCashData();
     } catch (error: unknown) {
       setActionError(error instanceof Error ? error.message : "Error al registrar el movimiento.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   // Cierre de caja y arqueo
   const handleCloseCash = async () => {
+    if (isSubmitting) return;
     try {
+      setIsSubmitting(true);
       setActionError(null);
-      if (differenceDecimal !== 0 && !diffReason.trim()) {
+      if (!differenceDecimal.isZero() && !diffReason.trim()) {
         setActionError("Hay una diferencia entre el efectivo esperado y el contado. La justificación es obligatoria.");
         return;
       }
@@ -215,9 +247,11 @@ export default function CashPage() {
       setIsClosingModalOpen(false);
       setDenominationCounts({});
       setDiffReason("");
-      fetchCashData();
+      refreshCashData();
     } catch (error: unknown) {
       setActionError(error instanceof Error ? error.message : "Error al cerrar la caja.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -237,11 +271,13 @@ export default function CashPage() {
               <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
                 report?.status === "OPEN" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-slate-100 text-slate-700"
               }`}>
-                {report?.status === "OPEN" ? `TURNO ABIERTO #${report.sessionNumber}` : "TURNO CERRADO"}
+                {report?.status === "OPEN"
+                  ? `TURNO ABIERTO #${report.sessionNumber}`
+                  : isLoading ? "CARGANDO CAJA" : "SIN TURNO ABIERTO"}
               </span>
             </div>
             <p className="text-xs text-slate-500 font-medium mt-0.5">
-              Cajera: <span className="font-bold text-slate-700">{report?.userName || "Claudette Colbert"}</span> · Moneda: Pesos Dominicanos (RD$)
+              Responsable: <span className="font-bold text-slate-700">{report?.userName || "—"}</span> · Moneda: Pesos Dominicanos (RD$)
             </p>
           </div>
         </div>
@@ -285,11 +321,12 @@ export default function CashPage() {
             </>
           ) : (
             <button
+              disabled={isLoading || isSubmitting}
               onClick={() => {
                 setActionError(null);
                 setIsOpeningModalOpen(true);
               }}
-              className="px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-extrabold shadow-md transition-all flex items-center gap-2"
+              className="px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-extrabold shadow-md transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Unlock className="w-4 h-4" />
               ABRIR TURNO DE CAJA
@@ -301,6 +338,15 @@ export default function CashPage() {
       {loadError && (
         <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
           {loadError}
+        </div>
+      )}
+
+      {!isLoading && !loadError && !report && (
+        <div className="rounded-2xl border border-sky-200 bg-sky-50 px-5 py-4">
+          <h2 className="font-bold text-sky-950">No hay un turno abierto</h2>
+          <p className="mt-1 text-sm text-sky-800">
+            Abre un turno para registrar movimientos y realizar el arqueo de efectivo.
+          </p>
         </div>
       )}
 
@@ -411,7 +457,7 @@ export default function CashPage() {
                           m.type === "ABONO_EFECTIVO" ? "bg-blue-50 text-blue-800" :
                           m.type === "INGRESO_MANUAL" ? "bg-teal-50 text-teal-800" : "bg-rose-50 text-rose-800"
                         }`}>
-                          {m.type.replace("_", " ")}
+                          {MOVEMENT_LABELS[m.type] || m.type.split("_").join(" ")}
                         </span>
                       </td>
                       <td className="py-2.5 px-3 text-slate-700 font-medium">
@@ -428,6 +474,80 @@ export default function CashPage() {
           </div>
         )}
       </div>
+
+      {sessions.length > 0 && (
+        <section className="bg-white rounded-3xl p-6 shadow-xs border border-slate-200/80 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-extrabold text-slate-900">Turnos recientes</h2>
+              <p className="text-xs text-slate-500 mt-1">Consulta aperturas, cierres y diferencias de caja.</p>
+            </div>
+            <span className="text-xs text-slate-500 font-semibold">{sessions.length} turnos</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-xs text-left">
+              <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-[10px] border-b border-slate-100">
+                <tr>
+                  <th className="py-2.5 px-3">Turno</th>
+                  <th className="py-2.5 px-3">Responsable / apertura</th>
+                  <th className="py-2.5 px-3 text-right">Fondo inicial</th>
+                  <th className="py-2.5 px-3 text-right">Esperado</th>
+                  <th className="py-2.5 px-3 text-right">Contado</th>
+                  <th className="py-2.5 px-3 text-right">Diferencia</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {sessions.map((session) => {
+                  const difference = session.difference === null ? null : new Decimal(session.difference);
+                  return (
+                    <tr key={session.id} className="hover:bg-slate-50/50">
+                      <td className="py-3 px-3">
+                        <span className={`inline-flex px-2 py-1 rounded-md font-bold text-[10px] ${
+                          session.status === "OPEN" ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-700"
+                        }`}>
+                          {session.status === "OPEN" ? "ABIERTO" : "CERRADO"} #{session.sessionNumber}
+                        </span>
+                      </td>
+                      <td className="py-3 px-3">
+                        <span className="block font-semibold text-slate-800">{session.userName}</span>
+                        <span className="text-slate-500">
+                          <Calendar className="inline w-3 h-3 mr-1" />
+                          {new Date(session.openedAt).toLocaleString("es-DO", {
+                            dateStyle: "short",
+                            timeStyle: "short",
+                          })}
+                          {session.closedAt && (
+                            <>
+                              <span className="mx-1.5">·</span>
+                              <Clock className="inline w-3 h-3 mr-1" />
+                              {new Date(session.closedAt).toLocaleTimeString("es-DO", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </>
+                          )}
+                        </span>
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono">{formatCurrencyRD(session.openingAmount)}</td>
+                      <td className="py-3 px-3 text-right font-mono">{formatCurrencyRD(session.expectedAmount)}</td>
+                      <td className="py-3 px-3 text-right font-mono">
+                        {session.countedAmount === null ? "—" : formatCurrencyRD(session.countedAmount)}
+                      </td>
+                      <td className={`py-3 px-3 text-right font-mono font-bold ${
+                        difference === null || difference.isZero()
+                          ? "text-slate-500"
+                          : difference.isNegative() ? "text-rose-600" : "text-amber-700"
+                      }`}>
+                        {difference === null ? "—" : formatCurrencyRD(difference.toFixed(2))}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {/* MODAL 1: APERTURA DE CAJA */}
       {isOpeningModalOpen && (
@@ -452,9 +572,12 @@ export default function CashPage() {
             <div>
               <label className="text-xs font-bold text-slate-700 block mb-1.5">Fondo Inicial en Efectivo (RD$)</label>
               <input
-                type="text"
+                type="number"
+                min="0"
+                step="0.01"
                 value={openingInput}
                 onChange={(e) => setOpeningInput(e.target.value)}
+                inputMode="decimal"
                 className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-mono text-lg font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 outline-none"
               />
             </div>
@@ -462,17 +585,19 @@ export default function CashPage() {
             <div className="flex gap-2 pt-2">
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => setIsOpeningModalOpen(false)}
-                className="flex-1 py-3 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50"
+                className="flex-1 py-3 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 Cancelar
               </button>
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={handleOpenCash}
-                className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md"
+                className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md disabled:opacity-50"
               >
-                Confirmar Apertura
+                {isSubmitting ? "Abriendo..." : "Confirmar Apertura"}
               </button>
             </div>
           </div>
@@ -508,13 +633,22 @@ export default function CashPage() {
             <div>
               <label className="text-xs font-bold text-slate-700 block mb-1">Monto en RD$</label>
               <input
-                type="text"
+                type="number"
+                min="0.01"
+                step="0.01"
                 placeholder="0.00"
                 value={movAmount}
                 onChange={(e) => setMovAmount(e.target.value)}
+                inputMode="decimal"
                 className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-base font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 outline-none"
               />
             </div>
+
+            {movementType === "RETIRO_MANUAL" && (
+              <p className="text-[11px] text-slate-500">
+                Los retiros superiores a RD$1,000 requieren permiso de autorización.
+              </p>
+            )}
 
             <div>
               <label className="text-xs font-bold text-slate-700 block mb-1">Motivo Obligatorio</label>
@@ -530,17 +664,19 @@ export default function CashPage() {
             <div className="flex gap-2 pt-2">
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => setIsMovementModalOpen(false)}
-                className="flex-1 py-3 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50"
+                className="flex-1 py-3 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 Cancelar
               </button>
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={handleSaveMovement}
-                className="flex-1 py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-md"
+                className="flex-1 py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-md disabled:opacity-50"
               >
-                Registrar Movimiento
+                {isSubmitting ? "Registrando..." : "Registrar Movimiento"}
               </button>
             </div>
           </div>
@@ -559,7 +695,7 @@ export default function CashPage() {
                 </div>
                 <div>
                   <h3 className="font-extrabold text-slate-900 text-base">Arqueo Físico y Cierre Diario de Caja</h3>
-                  <p className="text-xs text-slate-500 font-medium">Turno #{report.sessionNumber} · Claudette Colbert</p>
+                  <p className="text-xs text-slate-500 font-medium">Turno #{report.sessionNumber} · {report.userName}</p>
                 </div>
               </div>
               <button
@@ -594,16 +730,16 @@ export default function CashPage() {
                 <div className="border-l border-emerald-200/60 pl-3">
                   <span className="text-[10px] text-slate-500 uppercase font-black block mb-1">Diferencia</span>
                   <span className={`text-lg font-black font-mono ${
-                    differenceDecimal === 0 ? "text-emerald-700" :
-                    differenceDecimal < 0 ? "text-rose-600" : "text-amber-700"
+                    differenceDecimal.isZero() ? "text-emerald-700" :
+                    differenceDecimal.isNegative() ? "text-rose-600" : "text-amber-700"
                   }`}>
-                    {differenceDecimal === 0 ? "RD$ 0.00" : formatCurrencyRD(differenceDecimal)}
+                    {differenceDecimal.isZero() ? formatCurrencyRD("0.00") : formatCurrencyRD(differenceDecimal.toFixed(2))}
                   </span>
                 </div>
               </div>
 
               {/* Mensaje de Estado del Arqueo */}
-              {differenceDecimal === 0 ? (
+              {differenceDecimal.isZero() ? (
                 <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-bold flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                   <span>Caja Cuadrada Exacta: El conteo físico coincide exactamente con las operaciones registradas.</span>
@@ -612,7 +748,7 @@ export default function CashPage() {
                 <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-medium space-y-1">
                   <div className="font-bold flex items-center gap-1.5 text-amber-800">
                     <AlertTriangle className="w-4 h-4 text-amber-600" />
-                    <span>Descuadre detectado: {differenceDecimal < 0 ? "Faltante en caja" : "Sobrante en caja"}</span>
+                    <span>Descuadre detectado: {differenceDecimal.isNegative() ? "Faltante en caja" : "Sobrante en caja"}</span>
                   </div>
                   <p className="text-[11px] text-amber-700">
                     Debe ingresar obligatoriamente una justificación para poder asentar el cierre inmutable en auditoría.
@@ -628,7 +764,7 @@ export default function CashPage() {
                 <div className="grid grid-cols-2 gap-2">
                   {DOP_DENOMINATIONS.map((denom) => {
                     const count = denominationCounts[denom.value] || 0;
-                    const subtotal = count * parseFloat(denom.value);
+                    const subtotal = new Decimal(denom.value).mul(count).toFixed(2);
                     return (
                       <div
                         key={denom.value}
@@ -640,10 +776,13 @@ export default function CashPage() {
                           <input
                             type="number"
                             min="0"
+                            max="1000000"
+                            step="1"
                             value={count || ""}
                             placeholder="0"
                             onChange={(e) => {
-                              const val = parseInt(e.target.value) || 0;
+                              const val = e.target.value === "" ? 0 : Number(e.target.value);
+                              if (!Number.isSafeInteger(val) || val < 0 || val > 1000000) return;
                               setDenominationCounts((prev) => ({
                                 ...prev,
                                 [denom.value]: val,
@@ -653,7 +792,7 @@ export default function CashPage() {
                           />
                         </div>
                         <span className="font-mono text-slate-500 font-semibold w-16 text-right">
-                          RD${subtotal.toFixed(0)}
+                          {formatCurrencyRD(subtotal)}
                         </span>
                       </div>
                     );
@@ -662,7 +801,7 @@ export default function CashPage() {
               </div>
 
               {/* Campo de Justificación Obligatoria si hay descuadre */}
-              {differenceDecimal !== 0 && (
+              {!differenceDecimal.isZero() && (
                 <div>
                   <label className="text-xs font-bold text-slate-800 block mb-1">
                     Justificación Obligatoria del Descuadre
@@ -682,18 +821,20 @@ export default function CashPage() {
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex gap-2">
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => setIsClosingModalOpen(false)}
-                className="flex-1 py-3 border border-slate-200 bg-white rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100"
+                className="flex-1 py-3 border border-slate-200 bg-white rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
               >
                 Cancelar
               </button>
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={handleCloseCash}
-                className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold shadow-md flex items-center justify-center gap-1.5"
+                className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50"
               >
                 <Lock className="w-4 h-4" />
-                ASENTAR CIERRE DEFINITIVO
+                {isSubmitting ? "PROCESANDO CIERRE..." : "ASENTAR CIERRE DEFINITIVO"}
               </button>
             </div>
           </div>

@@ -2,10 +2,12 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { KeyRound, Pencil, ShieldCheck, UserPlus, Users } from "lucide-react";
+import { ArchiveConfirmModal } from "@/app/components/ArchiveConfirmModal";
 
 interface RoleOption {
   id: string;
   name: string;
+  status: "ACTIVE" | "INACTIVE";
 }
 
 interface ManagedUser {
@@ -61,6 +63,10 @@ export default function UsersPage() {
   const [roleName, setRoleName] = useState("");
   const [roleDescription, setRoleDescription] = useState("");
   const [rolePermissions, setRolePermissions] = useState<string[]>([]);
+  const [archiveUser, setArchiveUser] = useState<ManagedUser | null>(null);
+  const [archiveRole, setArchiveRole] = useState<ManagedRole | null>(null);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [isArchiving, setIsArchiving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   const loadData = useCallback(async () => {
@@ -70,7 +76,7 @@ export default function UsersPage() {
       setUsers(data.users);
       setRoles(data.roles);
       setPermissionOptions(data.permissions);
-      setUserRoleId((current) => current || data.roles[0]?.id || "");
+      setUserRoleId((current) => current || data.roles.find((role) => role.status === "ACTIVE")?.id || "");
     } catch (loadError: unknown) {
       setError(loadError instanceof Error ? loadError.message : "No se pudieron cargar los datos.");
     } finally {
@@ -86,7 +92,7 @@ export default function UsersPage() {
         setUsers(data.users);
         setRoles(data.roles);
         setPermissionOptions(data.permissions);
-        setUserRoleId((current) => current || data.roles[0]?.id || "");
+        setUserRoleId((current) => current || data.roles.find((role) => role.status === "ACTIVE")?.id || "");
       })
       .catch((loadError: unknown) => {
         if (active) setError(loadError instanceof Error ? loadError.message : "No se pudieron cargar los datos.");
@@ -104,7 +110,7 @@ export default function UsersPage() {
     setUserName("");
     setUserEmail("");
     setUserPassword("");
-    setUserRoleId(roles[0]?.id || "");
+    setUserRoleId(roles.find((role) => role.status === "ACTIVE")?.id || "");
   }
 
   function editUser(user: ManagedUser) {
@@ -144,9 +150,9 @@ export default function UsersPage() {
   }
 
   async function toggleUserStatus(user: ManagedUser) {
-    setError("");
-    setNotice("");
     try {
+      setIsArchiving(true);
+      setArchiveError(null);
       const response = await fetch("/api/users", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -154,10 +160,13 @@ export default function UsersPage() {
       });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error || "No se pudo cambiar el estado.");
+      setArchiveUser(null);
       setNotice(`Usuario ${user.status === "ACTIVE" ? "desactivado" : "activado"}.`);
       await loadData();
     } catch (saveError: unknown) {
-      setError(saveError instanceof Error ? saveError.message : "No se pudo cambiar el estado.");
+      setArchiveError(saveError instanceof Error ? saveError.message : "No se pudo cambiar el estado.");
+    } finally {
+      setIsArchiving(false);
     }
   }
 
@@ -195,6 +204,33 @@ export default function UsersPage() {
       await loadData();
     } catch (saveError: unknown) {
       setError(saveError instanceof Error ? saveError.message : "No se pudo guardar el rol.");
+    }
+  }
+
+  async function toggleRoleStatus(role: ManagedRole) {
+    try {
+      setIsArchiving(true);
+      setArchiveError(null);
+      const response = await fetch("/api/roles", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: role.id,
+          name: role.name,
+          description: role.description || "",
+          permissions: role.permissions,
+          status: role.status === "ACTIVE" ? "INACTIVE" : "ACTIVE",
+        }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "No se pudo cambiar el estado del rol.");
+      setArchiveRole(null);
+      setNotice(`Rol ${role.status === "ACTIVE" ? "archivado" : "restaurado"}.`);
+      await loadData();
+    } catch (statusError: unknown) {
+      setArchiveError(statusError instanceof Error ? statusError.message : "No se pudo cambiar el estado del rol.");
+    } finally {
+      setIsArchiving(false);
     }
   }
 
@@ -241,7 +277,13 @@ export default function UsersPage() {
                   <button type="button" onClick={() => editUser(user)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">
                     <Pencil className="h-3.5 w-3.5" /> Editar
                   </button>
-                  <button type="button" onClick={() => void toggleUserStatus(user)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">
+                  <button
+                    type="button"
+                    onClick={() => user.status === "ACTIVE"
+                      ? (setArchiveError(null), setArchiveUser(user))
+                      : void toggleUserStatus(user)}
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                  >
                     {user.status === "ACTIVE" ? "Desactivar" : "Activar"}
                   </button>
                 </div>
@@ -261,7 +303,9 @@ export default function UsersPage() {
             <label className="block space-y-1 text-sm font-semibold text-slate-700">Rol
               <select required value={userRoleId} onChange={(event) => setUserRoleId(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5">
                 <option value="" disabled>Selecciona un rol</option>
-                {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                {roles.filter((role) => role.status === "ACTIVE" || role.id === userRoleId).map((role) => (
+                  <option key={role.id} value={role.id}>{role.name}{role.status === "INACTIVE" ? " (inactivo)" : ""}</option>
+                ))}
               </select>
             </label>
             <label className="block space-y-1 text-sm font-semibold text-slate-700">
@@ -285,10 +329,24 @@ export default function UsersPage() {
                     <p className="font-bold text-slate-900">{role.name}</p>
                     <p className="text-sm text-slate-500">{role.description || "Sin descripción"}</p>
                     <p className="mt-2 text-xs font-semibold text-slate-500">{role.userCount} usuarios · {role.permissions.length} permisos</p>
+                    <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold ${role.status === "ACTIVE" ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>
+                      {role.status === "ACTIVE" ? "Activo" : "Archivado"}
+                    </span>
                   </div>
-                  <button type="button" onClick={() => editRole(role)} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">
-                    <Pencil className="h-3.5 w-3.5" /> Editar
-                  </button>
+                  <div className="flex shrink-0 gap-2">
+                    <button type="button" onClick={() => editRole(role)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">
+                      <Pencil className="h-3.5 w-3.5" /> Editar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => role.status === "ACTIVE"
+                        ? (setArchiveError(null), setArchiveRole(role))
+                        : void toggleRoleStatus(role)}
+                      className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                    >
+                      {role.status === "ACTIVE" ? "Archivar" : "Restaurar"}
+                    </button>
+                  </div>
                 </div>
               </article>
             ))}
@@ -332,6 +390,46 @@ export default function UsersPage() {
             </div>
           </form>
         </div>
+      )}
+      {archiveUser?.status === "ACTIVE" && (
+        <ArchiveConfirmModal
+          key={archiveUser.id}
+          title="Desactivar usuario"
+          entityLabel="Usuario"
+          entityName={archiveUser.email}
+          description="La cuenta perderá acceso al sistema. Su historial de actividad seguirá intacto y podrás reactivarla más adelante."
+          confirmLabel="Confirmar desactivación"
+          error={archiveError}
+          isSubmitting={isArchiving}
+          onClose={() => {
+            if (!isArchiving) {
+              setArchiveUser(null);
+              setArchiveError(null);
+            }
+          }}
+          onConfirm={() => void toggleUserStatus(archiveUser)}
+        />
+      )}
+      {archiveRole?.status === "ACTIVE" && (
+        <ArchiveConfirmModal
+          key={archiveRole.id}
+          title="Archivar rol"
+          entityLabel="Rol"
+          entityName={archiveRole.name}
+          description="El rol dejará de estar disponible para asignarlo a nuevos usuarios. Sus permisos y registros se conservarán."
+          blockedReason={archiveRole.userCount > 0
+            ? `No se puede archivar porque ${archiveRole.userCount} usuario(s) todavía tienen asignado este rol. Cambia esos usuarios a otro rol primero.`
+            : undefined}
+          error={archiveError}
+          isSubmitting={isArchiving}
+          onClose={() => {
+            if (!isArchiving) {
+              setArchiveRole(null);
+              setArchiveError(null);
+            }
+          }}
+          onConfirm={() => void toggleRoleStatus(archiveRole)}
+        />
       )}
     </div>
   );

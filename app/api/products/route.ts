@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
+import Decimal from "decimal.js";
 import { prisma } from "@/lib/db";
 import { getStockAlerts } from "@/server/services/inventory.service";
 import { requirePermission } from "@/server/services/auth.service";
+import { DEFAULT_SALES_LOCATION_ID } from "@/server/services/data-store";
 
 export async function GET(request: Request) {
   const auth = await requirePermission(request, "INVENTARIO.LEER");
@@ -25,6 +27,7 @@ export async function GET(request: Request) {
     })),
     categories,
     locations,
+    salesLocationId: DEFAULT_SALES_LOCATION_ID,
     stockByLocation: stockByLocation.map((stock) => ({
       ...stock,
       quantity: stock.quantity.toFixed(3),
@@ -91,6 +94,12 @@ export async function PUT(request: Request) {
     if (!body.name?.trim() || !body.code?.trim()) {
       return NextResponse.json({ error: "El nombre y el código son obligatorios" }, { status: 400 });
     }
+    if (body.status !== undefined && body.status !== "ACTIVE" && body.status !== "INACTIVE") {
+      return NextResponse.json({ error: "El estado del producto no es válido" }, { status: 400 });
+    }
+    if (body.status === "INACTIVE" && product.status !== "INACTIVE") {
+      return NextResponse.json({ error: "Usa la acción Eliminar para archivar el producto de forma segura." }, { status: 409 });
+    }
     const code = body.code.trim().toUpperCase();
     const duplicate = await prisma.product.findUnique({ where: { code } });
     if (duplicate && duplicate.id !== product.id) {
@@ -111,6 +120,7 @@ export async function PUT(request: Request) {
         targetStock: String(body.targetStock ?? product.targetStock),
         autoPurchaseOrder: Boolean(body.autoPurchaseOrder),
         iconId: body.iconId || "carne",
+        status: body.status ?? product.status,
       },
     });
 
@@ -124,6 +134,54 @@ export async function PUT(request: Request) {
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Error al actualizar producto";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  const auth = await requirePermission(request, "INVENTARIO.GESTIONAR");
+  if (!auth.ok) return auth.response;
+
+  const id = new URL(request.url).searchParams.get("id");
+  if (!id) {
+    return NextResponse.json({ error: "Indica el producto que deseas archivar." }, { status: 400 });
+  }
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const product = await tx.product.findUnique({ where: { id } });
+      if (!product) return { error: "No se encontró el producto.", statusCode: 404 };
+      if (product.status === "INACTIVE") return { status: "INACTIVE" };
+
+      const stockByLocation = await tx.stockByLocation.findMany({ where: { productId: id } });
+      const hasStock = !new Decimal(product.currentStock.toString()).isZero()
+        || stockByLocation.some((stock) => !new Decimal(stock.quantity.toString()).isZero());
+      if (hasStock) {
+        return {
+          error: "No se puede archivar un producto con existencias. Ajusta o traslada el inventario primero.",
+          statusCode: 409,
+        };
+      }
+
+      await tx.product.update({ where: { id }, data: { status: "INACTIVE" } });
+      await tx.auditLog.create({
+        data: {
+          userId: auth.user.id,
+          action: "DELETE",
+          entity: "PRODUCT",
+          entityId: id,
+          beforeState: { name: product.name, code: product.code, status: product.status },
+          afterState: { status: "INACTIVE" },
+        },
+      });
+      return { status: "INACTIVE" };
+    });
+    if ("error" in result) {
+      return NextResponse.json({ error: result.error }, { status: result.statusCode });
+    }
+    return NextResponse.json(result);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "No se pudo archivar el producto.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import Decimal from "decimal.js";
 import { prisma } from "@/lib/db";
 import { requirePermission } from "@/server/services/auth.service";
 
@@ -88,6 +89,12 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: "Selecciona condiciones de pago válidas." }, { status: 400 });
     }
     const status = body.status === "INACTIVE" ? "INACTIVE" : "ACTIVE";
+    if (status === "INACTIVE" && existing.status !== "INACTIVE") {
+      return NextResponse.json({ error: "Usa la acción Eliminar para archivar el proveedor de forma segura." }, { status: 409 });
+    }
+    if (status === "INACTIVE" && !new Decimal(existing.balance.toString()).isZero()) {
+      return NextResponse.json({ error: "No se puede archivar un proveedor con saldo pendiente." }, { status: 409 });
+    }
     const updated = await prisma.supplier.update({
       where: { id },
       data: {
@@ -112,6 +119,45 @@ export async function PUT(request: Request) {
     return NextResponse.json({ ...updated, balance: updated.balance.toFixed(2) });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "No se pudo actualizar el proveedor.";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  const auth = await requirePermission(request, "PROVEEDORES.GESTIONAR");
+  if (!auth.ok) return auth.response;
+
+  const id = new URL(request.url).searchParams.get("id");
+  if (!id) return NextResponse.json({ error: "Indica el proveedor que deseas archivar." }, { status: 400 });
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const supplier = await tx.supplier.findUnique({ where: { id } });
+      if (!supplier) return { error: "Proveedor no encontrado.", statusCode: 404 };
+      if (supplier.status === "INACTIVE") return { status: "INACTIVE" };
+      if (!new Decimal(supplier.balance.toString()).isZero()) {
+        return { error: "No se puede archivar un proveedor con saldo pendiente.", statusCode: 409 };
+      }
+
+      await tx.supplier.update({ where: { id }, data: { status: "INACTIVE" } });
+      await tx.auditLog.create({
+        data: {
+          userId: auth.user.id,
+          action: "DELETE",
+          entity: "SUPPLIER",
+          entityId: id,
+          beforeState: { name: supplier.name, status: supplier.status },
+          afterState: { status: "INACTIVE" },
+        },
+      });
+      return { status: "INACTIVE" };
+    });
+    if ("error" in result) {
+      return NextResponse.json({ error: result.error }, { status: result.statusCode });
+    }
+    return NextResponse.json(result);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "No se pudo archivar el proveedor.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

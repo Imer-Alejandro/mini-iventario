@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Decimal from "decimal.js";
 import {
   Search,
   Barcode,
@@ -48,6 +49,7 @@ interface Product {
   cost: string;
   currentStock: string;
   iconId?: string;
+  status: "ACTIVE" | "INACTIVE";
 }
 
 interface Customer {
@@ -60,6 +62,18 @@ interface Customer {
   status: string;
 }
 
+interface Location {
+  id: string;
+  name: string;
+  status: "ACTIVE" | "INACTIVE";
+}
+
+interface StockByLocation {
+  productId: string;
+  locationId: string;
+  quantity: string;
+}
+
 interface CompletedSale {
   number: number;
   createdAt: string | Date;
@@ -69,8 +83,10 @@ interface CompletedSale {
   paidAmount?: string;
   changeAmount?: string;
   lines: Array<{
+    productId: string;
     productName: string;
     quantity: string;
+    unit?: string;
     unitPrice: string;
     lineTotal: string;
   }>;
@@ -79,6 +95,10 @@ interface CompletedSale {
 export default function PosVentasPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [stockByLocation, setStockByLocation] = useState<StockByLocation[]>([]);
+  const [salesLocationId, setSalesLocationId] = useState("loc-003");
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
   const [searchQuery, setSearchQuery] = useState("");
@@ -88,6 +108,8 @@ export default function PosVentasPage() {
 
   // Modales
   const [modalProduct, setModalProduct] = useState<Product | null>(null);
+  const [editingCartLineIndex, setEditingCartLineIndex] = useState<number | null>(null);
+  const [initialWeight, setInitialWeight] = useState<string | undefined>();
   const [isWeightModalOpen, setIsWeightModalOpen] = useState(false);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
@@ -102,21 +124,49 @@ export default function PosVentasPage() {
 
   // Carga inicial de catálogo y clientes
   useEffect(() => {
+    let active = true;
     fetch("/api/products")
-      .then((res) => res.json())
-      .then((data) => {
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "No se pudo cargar el inventario.");
+        if (!active) return;
         if (data.products) setProducts(data.products);
         if (data.categories) setCategories(data.categories);
+        if (data.locations) setLocations(data.locations);
+        if (data.stockByLocation) setStockByLocation(data.stockByLocation);
+        if (typeof data.salesLocationId === "string") setSalesLocationId(data.salesLocationId);
+        setCatalogError(null);
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        if (active) setCatalogError(error instanceof Error ? error.message : "No se pudo cargar el inventario.");
+      });
 
     fetch("/api/customers")
       .then((res) => res.json())
       .then((data) => {
-        if (Array.isArray(data)) setCustomers(data);
+        if (active && Array.isArray(data)) setCustomers(data);
       })
       .catch(() => {});
+
+    return () => {
+      active = false;
+    };
   }, []);
+
+  const getAvailableStock = (productId: string, excludedCartLineIndex?: number) => {
+    const locationStock = stockByLocation.find(
+      (stock) => stock.productId === productId && stock.locationId === salesLocationId,
+    );
+    const reserved = cart.reduce((total, line, index) => {
+      if (line.productId !== productId || index === excludedCartLineIndex) return total;
+      return total.plus(line.quantity);
+    }, new Decimal(0));
+    const available = new Decimal(locationStock?.quantity ?? "0").minus(reserved);
+    return available.gt(0) ? available.toFixed(3) : "0.000";
+  };
+
+  const salesLocationName = locations.find((location) => location.id === salesLocationId)?.name
+    || "Mostrador";
 
   // Atajos de teclado para cajeros profesionales (Olive POS / Bitepoint)
   useEffect(() => {
@@ -162,6 +212,7 @@ export default function PosVentasPage() {
 
   // Filtrado de productos por categoría y búsqueda
   const filteredProducts = products.filter((p) => {
+    if (p.status !== "ACTIVE") return false;
     const matchesCat = selectedCategory === "ALL" || p.categoryId === selectedCategory;
     const matchesSearch =
       searchQuery === "" ||
@@ -172,6 +223,7 @@ export default function PosVentasPage() {
 
   const normalizedCustomerSearch = customerSearch.trim().toLowerCase();
   const filteredCustomers = customers.filter((customer) =>
+    customer.status !== "INACTIVE" &&
     [customer.name, customer.documentId, customer.phone]
       .filter(Boolean)
       .some((value) => value!.toLowerCase().includes(normalizedCustomerSearch)),
@@ -183,15 +235,28 @@ export default function PosVentasPage() {
 
   // Abrir pesaje para agregar producto
   const handleSelectProduct = (prod: Product) => {
-    setModalProduct(prod);
+    const availableStock = getAvailableStock(prod.id);
+    if (new Decimal(availableStock).lte(0)) return;
+    const defaultQuantity = prod.allowsDecimals ? "1.000" : "1";
+    const initialQuantity = new Decimal(availableStock).lessThan(defaultQuantity)
+      ? new Decimal(availableStock).toFixed(prod.allowsDecimals ? 3 : 0)
+      : defaultQuantity;
+    setEditingCartLineIndex(null);
+    setInitialWeight(initialQuantity);
+    setModalProduct({ ...prod, currentStock: availableStock });
     setIsWeightModalOpen(true);
   };
 
   // Re-abrir pesaje para una línea existente en el carrito
-  const handleEditCartLine = (line: CartLine) => {
+  const handleEditCartLine = (line: CartLine, index: number) => {
     const originalProd = products.find((p) => p.id === line.productId);
     if (originalProd) {
-      setModalProduct(originalProd);
+      setEditingCartLineIndex(index);
+      setInitialWeight(line.quantity);
+      setModalProduct({
+        ...originalProd,
+        currentStock: getAvailableStock(line.productId, index),
+      });
       setIsWeightModalOpen(true);
     }
   };
@@ -201,6 +266,15 @@ export default function PosVentasPage() {
     if (!modalProduct) return;
 
     const lineTotal = calculateLineTotal(quantity, modalProduct.price, modalProduct.allowsDecimals);
+    if (editingCartLineIndex !== null) {
+      setCart((prev) => prev.map((line, index) => (
+        index === editingCartLineIndex
+          ? { ...line, quantity, unit, lineTotal }
+          : line
+      )));
+      setEditingCartLineIndex(null);
+      return;
+    }
 
     // Verificar si ya está en el carrito
     setCart((prev) => {
@@ -285,6 +359,7 @@ export default function PosVentasPage() {
           productId: c.productId,
           quantity: c.quantity,
           unitPrice: c.unitPrice,
+          locationId: salesLocationId,
         })),
       }),
     });
@@ -295,6 +370,26 @@ export default function PosVentasPage() {
     }
 
     const createdSale: CompletedSale = await response.json();
+    const unitsByProduct = new Map(cart.map((line) => [line.productId, line.unit]));
+    const soldQuantities = new Map<string, Decimal>();
+    for (const line of createdSale.lines) {
+      soldQuantities.set(
+        line.productId,
+        (soldQuantities.get(line.productId) ?? new Decimal(0)).plus(line.quantity),
+      );
+    }
+    setProducts((current) => current.map((product) => {
+      const sold = soldQuantities.get(product.id);
+      return sold
+        ? { ...product, currentStock: new Decimal(product.currentStock).minus(sold).toFixed(3) }
+        : product;
+    }));
+    setStockByLocation((current) => current.map((stock) => {
+      const sold = stock.locationId === salesLocationId ? soldQuantities.get(stock.productId) : undefined;
+      return sold
+        ? { ...stock, quantity: new Decimal(stock.quantity).minus(sold).toFixed(3) }
+        : stock;
+    }));
 
     // Preparar objeto para ticket térmico
     setCompletedSale({
@@ -302,6 +397,10 @@ export default function PosVentasPage() {
       customerName: selectedCustomer?.name,
       paidAmount: params.paidAmount,
       changeAmount: params.changeAmount,
+      lines: createdSale.lines.map((line) => ({
+        ...line,
+        unit: unitsByProduct.get(line.productId),
+      })),
     });
 
     // Vaciar carrito
@@ -383,6 +482,19 @@ export default function PosVentasPage() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1">
         {/* PANEL IZQUIERDO: CATÁLOGO DE CORTES CÁRNICOS (7 COLUMNAS) */}
         <div className="lg:col-span-7 flex flex-col gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs">
+            <span className="font-bold text-sky-900">
+              Despacho de esta venta: {salesLocationName}
+            </span>
+            <span className="text-sky-800">
+              Existencia disponible por ubicación
+            </span>
+          </div>
+          {catalogError && (
+            <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
+              {catalogError}
+            </p>
+          )}
           {/* Pestañas de Categoría con Acabado Frosted Glass */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
             <button
@@ -413,23 +525,28 @@ export default function PosVentasPage() {
           {/* Tarjetas de Producto Táctiles con Meat Icons */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto max-h-[calc(100vh-14.5rem)] pr-1">
             {filteredProducts.map((p) => {
-              const stockNum = parseFloat(p.currentStock);
+              const availableStock = getAvailableStock(p.id);
+              const stockNum = parseFloat(availableStock);
               const isLowStock = stockNum <= 10;
               const isCriticalStock = stockNum <= 5;
+              const isUnavailable = stockNum <= 0;
 
               return (
                 <div
                   key={p.id}
-                  onClick={() => handleSelectProduct(p)}
+                  onClick={() => !isUnavailable && handleSelectProduct(p)}
                   role="button"
                   tabIndex={0}
+                  aria-disabled={isUnavailable}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
+                    if (!isUnavailable && (event.key === "Enter" || event.key === " ")) {
                       event.preventDefault();
                       handleSelectProduct(p);
                     }
                   }}
-                  className="glass-card rounded-3xl p-4 cursor-pointer active:scale-95 transition-all flex flex-col justify-between group relative select-none"
+                  className={`glass-card rounded-3xl p-4 transition-all flex flex-col justify-between group relative select-none ${
+                    isUnavailable ? "cursor-not-allowed opacity-60" : "cursor-pointer active:scale-95"
+                  }`}
                 >
                   <div>
                     {/* Código y Stock */}
@@ -455,7 +572,7 @@ export default function PosVentasPage() {
                               : "bg-emerald-500"
                           }`}
                         />
-                        {p.currentStock} {p.unit}
+                        Disponible: {availableStock} {p.unit}
                       </span>
                     </div>
 
@@ -551,7 +668,7 @@ export default function PosVentasPage() {
                       <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5">
                         <button
                           type="button"
-                          onClick={() => handleEditCartLine(line)}
+                          onClick={() => handleEditCartLine(line, idx)}
                           className="font-mono font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.2 rounded hover:bg-emerald-100 transition-colors cursor-pointer"
                           title="Haga clic para cambiar peso"
                         >
@@ -812,10 +929,15 @@ export default function PosVentasPage() {
 
       {isWeightModalOpen && (
         <WeightInputModal
-          key={modalProduct?.id || "no-product"}
+          key={`${modalProduct?.id || "no-product"}-${editingCartLineIndex ?? "new"}`}
           isOpen={isWeightModalOpen}
-          onClose={() => setIsWeightModalOpen(false)}
+          onClose={() => {
+            setIsWeightModalOpen(false);
+            setEditingCartLineIndex(null);
+          }}
           product={modalProduct}
+          initialQuantity={initialWeight}
+          locationName={salesLocationName}
           onConfirm={handleConfirmWeight}
         />
       )}
